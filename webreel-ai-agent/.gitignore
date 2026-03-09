@@ -1,0 +1,16 @@
+.env
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+videos/
+webreel.config.json
+*.png
+*.mp4
+*.gif
+*.webm

@@ -1,0 +1,64 @@
+{
+  "title": "Hướng dẫn đăng video lên YouTube",
+  "steps": [
+    {
+      "action": "navigate",
+      "value": "https://www.youtube.com",
+      "voiceover": "Xin chào các bạn! Hôm nay mình sẽ hướng dẫn cách đăng video lên YouTube. Đầu tiên, hãy truy cập vào trang chủ YouTube."
+    },
+    {
+      "action": "click",
+      "target": "nút Đăng nhập ở góc trên bên phải",
+      "voiceover": "Bạn cần đăng nhập vào tài khoản YouTube của mình. Hãy click vào nút Đăng nhập."
+    },
+    {
+      "action": "type",
+      "target": "ô nhập email",
+      "value": "tài_khoản@gmail.com",
+      "voiceover": "Tiếp theo, nhập địa chỉ email của bạn."
+    },
+    {
+      "action": "type",
+      "target": "ô nhập mật khẩu",
+      "value": "mật_khẩu_của_bạn",
+      "voiceover": "Sau đó, nhập mật khẩu của bạn."
+    },
+    {
+      "action": "click",
+      "target": "nút Đăng nhập",
+      "voiceover": "Cuối cùng, click vào nút Đăng nhập để truy cập vào trang chủ YouTube."
+    },
+    {
+      "action": "click",
+      "target": "nút Tải lên ở góc trên bên phải",
+      "voiceover": "Bây giờ, hãy click vào nút Tải lên để bắt đầu đăng video."
+    },
+    {
+      "action": "click",
+      "target": "nút Chọn tệp",
+      "voiceover": "Tiếp theo, click vào nút Chọn tệp để chọn video bạn muốn đăng."
+    },
+    {
+      "action": "type",
+      "target": "ô nhập tiêu đề video",
+      "value": "Tiêu đề video của bạn",
+      "voiceover": "Sau đó, nhập tiêu đề cho video của bạn."
+    },
+    {
+      "action": "type",
+      "target": "ô nhập mô tả video",
+      "value": "Mô tả video của bạn",
+      "voiceover": "Và nhập mô tả cho video của bạn."
+    },
+    {
+      "action": "click",
+      "target": "nút Tải lên",
+      "voiceover": "Cuối cùng, click vào nút Tải lên để bắt đầu quá trình tải video lên."
+    },
+    {
+      "action": "pause",
+      "duration": 5000,
+      "voiceover": "Quá trình tải video lên có thể mất vài phút. Sau khi tải lên xong, bạn có thể xem lại video của mình trên YouTube. Cảm ơn các bạn đã theo dõi!"
+    }
+  ]
+}

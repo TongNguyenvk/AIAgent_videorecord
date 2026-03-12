@@ -1,30 +1,22 @@
-# Gemini AI (primary LLM)
-google-generativeai>=0.8.0
-
-# Browser automation (Vision AI screenshots)
-playwright>=1.40.0
-
-# Data validation
+# Core dependencies (lightweight, install first)
+python-dotenv>=1.0.0
+requests>=2.31.0
 pydantic>=2.0.0
 
-# Environment variables
-python-dotenv>=1.0.0
+# Browser automation
+playwright>=1.40.0
+browser-use>=0.12.0
 
-# Image processing
-Pillow>=10.0.0
+# Gemini AI (primary LLM)
+google-genai>=1.0.0
 
-# Streamlit UI (Tuan 5)
-streamlit>=1.35.0
+# UI and utilities (use compatible versions)
+streamlit>=1.55.0
+Pillow==12.1.0
 
-# EasyOCR (OCR fallback, giam API calls)
-easyocr>=1.7.0
-
-# FPT.AI TTS (requests da co san voi playwright, khai bao ro rang)
-requests>=2.31.0
-
-# Testing
-pytest>=7.0.0
-
-# Dev / testing
+# Testing (optional, can be removed for production)
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
+
+# Video processing (install from git for Pillow 12 support)
+moviepy @ git+https://github.com/Zulko/moviepy.git@master

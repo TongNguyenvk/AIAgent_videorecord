@@ -13,3 +13,54 @@ coverage
 *.log
 package-lock.json
 demo-reel.mp4
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+ENV/
+env/
+
+# AI Agent specific
+output/
+videos/
+webreel-ai-agent/output/
+webreel-ai-agent/browser-use/
+*.mp4
+*.webm
+*.gif
+*.png
+!examples/**/*.png
+
+# Test files
+test_*.py
+*_test.py
+test-cases/
+tests/
+
+# Temporary and debug files
+*.resolved
+*.UItts
+build_error.txt
+google_docker_auth_issue.md
+bu-to-webreel.py
+bu-to-webreel.py.output.json
+
+# Documentation (keep only essential)
+CHROME_PATH_ISSUE.md
+VIDEO_WHITE_ISSUE_FIX.md
+TYPING_SOLUTION_FINAL.md
+PARSER_COMPLETE.md
+PIPELINE_COMPLETE.md
+walkthrough*.md
+
+# IDE
+.vscode/
+.idea/
+
+# Docker
+.dockerignore

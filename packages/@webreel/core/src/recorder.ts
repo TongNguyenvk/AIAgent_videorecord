@@ -175,11 +175,16 @@ export class Recorder {
           if (!evalResult) break;
         }
         const screenshotResult = await this.raceStop(
-          client.Page.captureScreenshot({
-            format: "jpeg",
-            quality: 60,
-            optimizeForSpeed: true,
-          }),
+          Promise.race([
+            client.Page.captureScreenshot({
+              format: "jpeg",
+              quality: 60,
+              optimizeForSpeed: true,
+            }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("captureScreenshot timeout")), 2000)
+            )
+          ])
         );
         if (!screenshotResult) break;
 
@@ -209,13 +214,22 @@ export class Recorder {
       } catch (err) {
         if (!this.running) break;
         consecutiveErrors++;
-        if (consecutiveErrors >= 10) {
+        
+        // During page navigations, captureScreenshot can throw rapidly.
+        // Wait a frame before retrying, and increase tolerance to 300 (~10s at 30fps).
+        // This prevents the silent type hang from deadlock when React DOM shifts.
+        if (consecutiveErrors >= 300) {
           console.error(
             `Recording aborted after ${consecutiveErrors} consecutive capture failures:`,
             err,
           );
+          // Release any pending waitForNextTick promises so the runner doesn't hang
+          if (this.timeline) {
+            this.timeline.tick();
+          }
           break;
         }
+        await new Promise((r) => setTimeout(r, this.frameMs));
       }
     }
   }

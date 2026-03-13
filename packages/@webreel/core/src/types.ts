@@ -17,6 +17,7 @@ export type CDPClient = {
       quality?: number;
       optimizeForSpeed?: boolean;
     }) => Promise<{ data: string }>;
+    addScriptToEvaluateOnNewDocument: (params: { source: string }) => Promise<void>;
   };
   Input: {
     dispatchMouseEvent: (params: {

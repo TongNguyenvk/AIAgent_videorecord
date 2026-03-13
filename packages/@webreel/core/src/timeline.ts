@@ -140,6 +140,14 @@ export class InteractionTimeline {
   waitForNextTick(): Promise<void> {
     return new Promise((resolve) => {
       this.tickResolvers.push(resolve);
+      // Safety valve: prevent deadlocks if the recorder hangs
+      setTimeout(() => {
+        const idx = this.tickResolvers.indexOf(resolve);
+        if (idx !== -1) {
+          this.tickResolvers.splice(idx, 1);
+          resolve(); // Resolve anyway to unblock the runner
+        }
+      }, 1000);
     });
   }
 

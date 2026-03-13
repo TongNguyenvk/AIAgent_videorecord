@@ -194,6 +194,7 @@ const MAX_LAUNCH_ATTEMPTS = 3;
 
 export interface LaunchChromeOptions {
   headless?: boolean;
+  profile?: string;
 }
 
 export async function launchChrome(
@@ -213,7 +214,10 @@ export async function launchChrome(
 
   for (let attempt = 1; attempt <= MAX_LAUNCH_ATTEMPTS; attempt++) {
     const port = await findFreePort();
-    const userDataDir = mkdtempSync(join(tmpdir(), "webreel-chrome-"));
+    const isTempProfile = !options?.profile;
+    const userDataDir = options?.profile
+      ? resolve(options.profile)
+      : mkdtempSync(join(tmpdir(), "webreel-chrome-"));
 
     const args = headless
       ? [
@@ -298,14 +302,14 @@ export async function launchChrome(
         kill: () => {
           proc.kill("SIGTERM");
           setTimeout(() => {
-            rmSync(userDataDir, { recursive: true, force: true });
+            if (isTempProfile) rmSync(userDataDir, { recursive: true, force: true });
           }, 500);
         },
       };
     } catch (err) {
       lastError = err as Error;
       proc.kill("SIGKILL");
-      rmSync(userDataDir, { recursive: true, force: true });
+      if (isTempProfile) rmSync(userDataDir, { recursive: true, force: true });
 
       if (attempt < MAX_LAUNCH_ATTEMPTS) {
         await new Promise((r) => setTimeout(r, 500 * attempt));

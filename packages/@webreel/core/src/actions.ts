@@ -111,6 +111,26 @@ export async function pause(ms = 1200): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
+export function buildElementExpression(selector: string, within?: string): string {
+  const scopeExpr = within ? buildElementExpression(within) : "document";
+  if (selector.startsWith('xpath=')) {
+    const xpath = selector.replace('xpath=', '');
+    
+    // Validate and fix common XPath issues
+    let fixedXpath = xpath;
+    if (xpath.startsWith('//') && xpath.includes('/html')) {
+      // Invalid: double slash with absolute path like '//html/body/...'
+      // Fix: remove leading slashes and keep only one
+      fixedXpath = xpath.replace(/^\/+/, '/');
+      console.warn(`[Webreel] Fixed invalid XPath: ${xpath} -> ${fixedXpath}`);
+    }
+    
+    return `(() => { try { const result = document.evaluate(${JSON.stringify(fixedXpath)}, ${scopeExpr}, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; if (!result) console.warn('[Webreel] XPath returned null:', ${JSON.stringify(fixedXpath)}); return result; } catch (e) { console.error('[Webreel] XPath error:', e.message, 'for:', ${JSON.stringify(fixedXpath)}); return null; } })()`;
+  } else {
+    return `(${scopeExpr}.querySelector(${JSON.stringify(selector)}))`;
+  }
+}
+
 export async function navigate(client: CDPClient, url: string): Promise<void> {
   const loadPromise = client.Page.loadEventFired();
   await client.Page.navigate({ url });
@@ -119,19 +139,25 @@ export async function navigate(client: CDPClient, url: string): Promise<void> {
 
 export async function waitForSelector(
   client: CDPClient,
-  selector: string,
+  selector: string | string[],
   timeoutMs = 30000,
+  within?: string,
 ): Promise<void> {
   const start = Date.now();
+  const selectors = Array.isArray(selector) ? selector : [selector];
+  
   while (Date.now() - start < timeoutMs) {
-    const { result } = await client.Runtime.evaluate({
-      expression: `!!document.querySelector(${JSON.stringify(selector)})`,
-      returnByValue: true,
-    });
-    if (result.value === true) return;
+    for (const sel of selectors) {
+      const expr = buildElementExpression(sel, within);
+      const { result } = await client.Runtime.evaluate({
+        expression: `!!${expr}`,
+        returnByValue: true,
+      });
+      if (result.value === true) return;
+    }
     await pause(200);
   }
-  throw new Error(`Timeout waiting for selector "${selector}" after ${timeoutMs}ms`);
+  throw new Error(`Timeout waiting for selector "${selectors.join(', ')}" after ${timeoutMs}ms`);
 }
 
 export async function waitForText(
@@ -146,6 +172,30 @@ export async function waitForText(
     await pause(200);
   }
   throw new Error(`Timeout waiting for text "${text}" after ${timeoutMs}ms`);
+}
+
+export async function waitForInteractive(
+  client: CDPClient,
+  box: BoundingBox,
+  timeoutMs = 5000,
+): Promise<void> {
+  const start = Date.now();
+  const cx = Math.round(box.x + box.width / 2);
+  const cy = Math.round(box.y + box.height / 2);
+
+  while (Date.now() - start < timeoutMs) {
+    const { result } = await client.Runtime.evaluate({
+      expression: `(() => {
+        const el = document.elementFromPoint(${cx}, ${cy});
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        return style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+      })()`,
+      returnByValue: true,
+    });
+    if (result.value === true) return;
+    await pause(100);
+  }
 }
 
 export async function findElementByText(
@@ -191,11 +241,27 @@ export async function findElementBySelector(
   selector: string,
   within?: string,
 ): Promise<BoundingBox | null> {
+  const expr = buildElementExpression(selector, within);
+  
+  // Debug: Check DOM state before evaluating selector
+  const { result: debugResult } = await client.Runtime.evaluate({
+    expression: `(() => {
+      return {
+        bodyExists: !!document.body,
+        bodyChildren: document.body ? document.body.children.length : 0,
+        navExists: !!document.querySelector('nav'),
+        readyState: document.readyState,
+        url: document.location.href
+      };
+    })()`,
+    returnByValue: true,
+  });
+  console.log('[Webreel DEBUG] DOM state:', debugResult.value);
+  
   const { result } = await client.Runtime.evaluate({
     expression: `(() => {
-      const scope = ${within ? `document.querySelector(${JSON.stringify(within)})` : "document"};
-      if (!scope) return null;
-      const el = scope.querySelector(${JSON.stringify(selector)});
+      const el = ${expr};
+      console.log('[Webreel findElementBySelector]', 'selector:', ${JSON.stringify(selector)}, 'element:', el);
       if (!el) return null;
       const r = el.getBoundingClientRect();
       return { x: r.x, y: r.y, width: r.width, height: r.height };
@@ -612,10 +678,19 @@ export const CHAR_CODES: Record<string, { code: string; keyCode: number }> = {
   "'": { code: "Quote", keyCode: 222 },
 };
 
-function humanDelay(base: number): number {
-  const jitter = base * (0.6 + Math.random() * 0.9);
-  if (Math.random() < 0.12) return jitter + base * 1.5 + Math.random() * base * 2;
-  return jitter;
+function humanDelay(): number {
+  // Gaussian-like approximation for 30ms to 150ms
+  const min = 30;
+  const max = 150;
+  let rand = 0;
+  for (let i = 0; i < 6; i += 1) rand += Math.random();
+  const res = rand / 6;
+  let delay = min + res * (max - min);
+  // Occasional longer pause simulating thinking
+  if (Math.random() < 0.05) {
+    delay += 200 + Math.random() * 300;
+  }
+  return delay;
 }
 
 export async function typeText(
@@ -665,12 +740,12 @@ export async function typeText(
       const waitStart = Date.now();
       await getTimeline(ctx).waitForNextTick();
       const tickElapsed = Date.now() - waitStart;
-      const delay = humanDelay(delayMs);
+      const delay = humanDelay();
       if (delay > tickElapsed) {
         await pause(delay - tickElapsed);
       }
     } else {
-      await pause(humanDelay(delayMs));
+      await pause(humanDelay());
     }
   }
 }

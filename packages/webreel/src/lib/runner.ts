@@ -28,34 +28,44 @@ import {
   extractThumbnail,
   moveFileSync,
   DEFAULT_VIEWPORT_SIZE,
+  buildElementExpression,
+  waitForInteractive,
 } from "@webreel/core";
 import type { VideoConfig, Step, ElementTarget } from "./types.js";
 
 export function formatStep(i: number, step: Step): string {
   const desc = "description" in step && step.description ? `: ${step.description}` : "";
+  const formatSelector = (sel: string | string[] | undefined) => {
+    if (!sel) return "";
+    if (Array.isArray(sel)) {
+      return sel.length === 1 ? sel[0] : `[${sel.map(s => `"${s}"`).join(' OR ')}]`;
+    }
+    return sel;
+  };
+
   switch (step.action) {
     case "pause":
       return `[step ${i}] pause ${step.ms}ms${desc}`;
     case "click":
-      return `[step ${i}] click ${step.text ? `text="${step.text}"` : `selector="${step.selector}"`}${desc}`;
+      return `[step ${i}] click ${step.text ? `text="${step.text}"` : `selector="${formatSelector(step.selector)}"`}${desc}`;
     case "key":
       return `[step ${i}] key "${step.key}"${desc}`;
     case "type":
-      return `[step ${i}] type "${step.text}"${desc}`;
+      return `[step ${i}] type "${step.text}"${step.selector ? ` selector="${formatSelector(step.selector)}"` : ""}${desc}`;
     case "scroll":
       return `[step ${i}] scroll x=${step.x ?? 0} y=${step.y ?? 0}${desc}`;
     case "wait":
-      return `[step ${i}] wait ${step.selector ? `selector="${step.selector}"` : `text="${step.text}"`}${desc}`;
+      return `[step ${i}] wait ${step.selector ? `selector="${formatSelector(step.selector)}"` : `text="${step.text}"`}${desc}`;
     case "drag":
       return `[step ${i}] drag${desc}`;
     case "moveTo":
-      return `[step ${i}] moveTo ${step.text ? `text="${step.text}"` : `selector="${step.selector}"`}${desc}`;
+      return `[step ${i}] moveTo ${step.text ? `text="${step.text}"` : `selector="${formatSelector(step.selector)}"`}${desc}`;
     case "screenshot":
       return `[step ${i}] screenshot "${step.output}"${desc}`;
     case "navigate":
       return `[step ${i}] navigate "${step.url}"${desc}`;
     case "hover":
-      return `[step ${i}] hover ${step.text ? `text="${step.text}"` : `selector="${step.selector}"`}${desc}`;
+      return `[step ${i}] hover ${step.text ? `text="${step.text}"` : `selector="${formatSelector(step.selector)}"`}${desc}`;
     case "select":
       return `[step ${i}] select "${step.selector}" value="${step.value}"${desc}`;
     default: {
@@ -65,30 +75,54 @@ export function formatStep(i: number, step: Step): string {
   }
 }
 
-export function resolveKeyTarget(target: string | ElementTarget): string {
+export function resolveKeyTarget(target: string | ElementTarget): string | string[] {
   if (typeof target === "string") return target;
   return target.selector ?? "";
 }
 
 async function resolveTarget(
   client: CDPClient,
-  opts: { text?: string; selector?: string; within?: string },
-): Promise<BoundingBox> {
+  opts: { text?: string; selector?: string | string[]; within?: string },
+  timeoutMs = 5000,
+): Promise<{ box: BoundingBox; matchedSelector?: string }> {
   if (!opts.text && !opts.selector) {
     throw new Error(`resolveTarget requires "text" or "selector"`);
   }
+  
+  const start = Date.now();
   let box: BoundingBox | null = null;
-  if (opts.text) {
-    box = await findElementByText(client, opts.text, opts.within);
-  } else if (opts.selector) {
-    box = await findElementBySelector(client, opts.selector, opts.within);
+  let matchedSelector: string | undefined;
+
+  while (Date.now() - start < timeoutMs) {
+    if (opts.text) {
+      box = await findElementByText(client, opts.text, opts.within);
+    } else if (opts.selector) {
+      const selectors = Array.isArray(opts.selector) ? opts.selector : [opts.selector];
+      for (const sel of selectors) {
+        box = await findElementBySelector(client, sel, opts.within);
+        if (box) {
+          matchedSelector = sel;
+          break;
+        }
+      }
+    }
+    if (box) break;
+    await new Promise((r) => setTimeout(r, 100));
   }
+
   if (!box) {
-    const target = opts.text ? `text="${opts.text}"` : `selector="${opts.selector}"`;
+    let target: string;
+    if (opts.text) {
+      target = `text="${opts.text}"`;
+    } else if (Array.isArray(opts.selector)) {
+      target = `selectors=[${opts.selector.map(s => `"${s}"`).join(', ')}] (tried all, none matched)`;
+    } else {
+      target = `selector="${opts.selector}"`;
+    }
     const scope = opts.within ? ` within "${opts.within}"` : "";
     throw new Error(`Element not found: ${target}${scope}`);
   }
-  return box;
+  return { box, matchedSelector };
 }
 
 export function resolveUrl(url: string, baseUrl: string, configDir: string): string {
@@ -150,7 +184,10 @@ export async function runVideo(
   if (config.clickDwell !== undefined) ctx.setClickDwell(config.clickDwell);
   const initialCursor = ctx.getCursorPosition();
 
-  const chrome = await launchChrome({ headless: shouldRecord });
+  const chrome = await launchChrome({ 
+    headless: shouldRecord,
+    profile: config.profile,
+  });
   let clientRef: CDPClient | null = null;
   let recorder: Recorder | null = null;
 
@@ -169,13 +206,34 @@ export async function runVideo(
     const baseUrl = config.baseUrl ?? "";
     const url = resolveUrl(config.url, baseUrl, configDir);
 
+    // Stealth Evasions
+    const stealthScript = `
+      // Overwrite the webdriver property
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+      });
+      // Mock chrome object
+      window.chrome = {
+        runtime: {},
+        // etc
+      };
+      // Pass permissions
+      const originalQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications' ?
+          Promise.resolve({ state: Notification.permission } as PermissionStatus) :
+          originalQuery(parameters)
+      );
+    `;
+    await client.Page.addScriptToEvaluateOnNewDocument({ source: stealthScript });
+
     await navigate(client, url);
 
     if (config.waitFor) {
       if (typeof config.waitFor === "string") {
         await waitForSelector(client, config.waitFor);
       } else if (config.waitFor.selector) {
-        await waitForSelector(client, config.waitFor.selector);
+        await waitForSelector(client, config.waitFor.selector, 30000, config.waitFor.within);
       } else if (config.waitFor.text) {
         await waitForText(client, config.waitFor.text, config.waitFor.within);
       }
@@ -255,7 +313,8 @@ export async function runVideo(
             break;
 
           case "click": {
-            const box = await resolveTarget(client, step);
+            const { box } = await resolveTarget(client, step);
+            await waitForInteractive(client, box);
             const { x: cx, y: cy } = randomPointInBox(box);
             await clickAt(ctx, client, cx, cy, step.modifiers);
             break;
@@ -265,8 +324,10 @@ export async function runVideo(
             if (step.target) {
               const sel = resolveKeyTarget(step.target);
               if (sel) {
+                const { matchedSelector } = await resolveTarget(client, { selector: sel });
+                const expr = buildElementExpression(matchedSelector || (Array.isArray(sel) ? sel[0] : sel));
                 await client.Runtime.evaluate({
-                  expression: `document.querySelector(${JSON.stringify(sel)})?.focus()`,
+                  expression: `${expr}?.focus()`,
                 });
                 await pause(100);
               }
@@ -276,21 +337,30 @@ export async function runVideo(
           }
 
           case "drag": {
-            const fromBox = await resolveTarget(client, step.from);
-            const toBox = await resolveTarget(client, step.to);
+            const { box: fromBox } = await resolveTarget(client, step.from);
+            const { box: toBox } = await resolveTarget(client, step.to);
             await dragFromTo(ctx, client, fromBox, toBox);
             break;
           }
 
           case "type": {
             if (step.selector) {
-              const box = await resolveTarget(client, { selector: step.selector, within: step.within });
+              const { box, matchedSelector } = await resolveTarget(client, { selector: step.selector, within: step.within });
+              await waitForInteractive(client, box);
               const { x: tx, y: ty } = randomPointInBox(box);
               await clickAt(ctx, client, tx, ty);
+              
+              const expr = buildElementExpression(matchedSelector || (Array.isArray(step.selector) ? step.selector[0] : step.selector), step.within);
               await client.Runtime.evaluate({
-                expression: `document.querySelector(${JSON.stringify(step.selector)})?.focus()`,
+                expression: `(() => {
+                  const el = ${expr};
+                  if (el) {
+                    el.focus();
+                    el.dispatchEvent(new Event('focus', { bubbles: true }));
+                  }
+                })()`,
               });
-              await pause(300 + Math.random() * 200);
+              await pause(100 + Math.random() * 50); // Small realistic delay before typing
             }
             await typeText(ctx, client, step.text, step.charDelay);
             break;
@@ -300,18 +370,16 @@ export async function runVideo(
             const scrollX = step.x ?? 0;
             const scrollY = step.y ?? 0;
             if (step.selector) {
-              const withinScope = step.within
-                ? `document.querySelector(${JSON.stringify(step.within)})`
-                : "document";
+              const { matchedSelector } = await resolveTarget(client, { selector: step.selector, within: step.within });
+              const expr = buildElementExpression(matchedSelector || (Array.isArray(step.selector) ? step.selector[0] : step.selector), step.within);
               await client.Runtime.evaluate({
                 expression: `(() => {
-                  const scope = ${withinScope};
-                  const target = scope?.querySelector(${JSON.stringify(step.selector)});
+                  const target = ${expr};
                   if (target) target.scrollBy({ left: ${scrollX}, top: ${scrollY}, behavior: "smooth" });
                 })()`,
               });
             } else if (step.text) {
-              const box = await resolveTarget(client, step);
+              const { box } = await resolveTarget(client, step);
               await client.Runtime.evaluate({
                 expression: `(() => {
                   const el = document.elementFromPoint(${Math.round(box.x + box.width / 2)}, ${Math.round(box.y + box.height / 2)});
@@ -329,10 +397,7 @@ export async function runVideo(
 
           case "wait": {
             if (step.selector) {
-              const scopedSelector = step.within
-                ? `${step.within} ${step.selector}`
-                : step.selector;
-              await waitForSelector(client, scopedSelector, step.timeout);
+              await waitForSelector(client, step.selector, step.timeout, step.within);
             } else if (step.text) {
               await waitForText(client, step.text, step.within, step.timeout);
             }
@@ -345,7 +410,7 @@ export async function runVideo(
           }
 
           case "moveTo": {
-            const box = await resolveTarget(client, step);
+            const { box } = await resolveTarget(client, step);
             const { x: mx, y: my } = randomPointInBox(box, 0.1);
             await moveCursorTo(ctx, client, mx, my);
             break;
@@ -358,7 +423,7 @@ export async function runVideo(
           }
 
           case "hover": {
-            const box = await resolveTarget(client, step);
+            const { box } = await resolveTarget(client, step);
             const { x: hx, y: hy } = randomPointInBox(box, 0.1);
             await moveCursorTo(ctx, client, hx, hy);
             await client.Input.dispatchMouseEvent({
@@ -371,13 +436,11 @@ export async function runVideo(
 
           case "select": {
             if (step.selector) {
-              const withinScope = step.within
-                ? `document.querySelector(${JSON.stringify(step.within)})`
-                : "document";
+              const { matchedSelector } = await resolveTarget(client, { selector: step.selector, within: step.within });
+              const expr = buildElementExpression(matchedSelector || (Array.isArray(step.selector) ? step.selector[0] : step.selector), step.within);
               await client.Runtime.evaluate({
                 expression: `(() => {
-                  const scope = ${withinScope};
-                  const el = scope?.querySelector(${JSON.stringify(step.selector)});
+                  const el = ${expr};
                   if (!el) throw new Error("Element not found: " + ${JSON.stringify(step.selector)});
                   el.value = ${JSON.stringify(step.value)};
                   el.dispatchEvent(new Event("input", { bubbles: true }));
@@ -385,7 +448,7 @@ export async function runVideo(
                 })()`,
               });
             } else if (step.text) {
-              const box = await resolveTarget(client, step);
+              const { box } = await resolveTarget(client, step);
               await client.Runtime.evaluate({
                 expression: `(() => {
                   const el = document.elementFromPoint(${Math.round(box.x + box.width / 2)}, ${Math.round(box.y + box.height / 2)});

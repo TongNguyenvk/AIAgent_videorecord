@@ -1,6 +1,6 @@
 export interface ElementTarget {
   text?: string;
-  selector?: string;
+  selector?: string | string[];
   within?: string;
 }
 
@@ -14,7 +14,7 @@ export interface StepPause {
 export interface StepClick {
   action: "click";
   text?: string;
-  selector?: string;
+  selector?: string | string[];
   within?: string;
   modifiers?: string[];
   label?: string;
@@ -43,7 +43,7 @@ export interface StepDrag {
 export interface StepType {
   action: "type";
   text: string;
-  selector?: string;
+  selector?: string | string[];
   within?: string;
   charDelay?: number;
   label?: string;
@@ -56,7 +56,7 @@ export interface StepScroll {
   x?: number;
   y?: number;
   text?: string;
-  selector?: string;
+  selector?: string | string[];
   within?: string;
   label?: string;
   delay?: number;
@@ -65,7 +65,7 @@ export interface StepScroll {
 
 export interface StepWait {
   action: "wait";
-  selector?: string;
+  selector?: string | string[];
   text?: string;
   within?: string;
   timeout?: number;
@@ -77,7 +77,7 @@ export interface StepWait {
 export interface StepMoveTo {
   action: "moveTo";
   text?: string;
-  selector?: string;
+  selector?: string | string[];
   within?: string;
   label?: string;
   delay?: number;
@@ -103,7 +103,7 @@ export interface StepNavigate {
 export interface StepHover {
   action: "hover";
   text?: string;
-  selector?: string;
+  selector?: string | string[];
   within?: string;
   label?: string;
   delay?: number;
@@ -113,7 +113,7 @@ export interface StepHover {
 export interface StepSelect {
   action: "select";
   text?: string;
-  selector?: string;
+  selector?: string | string[];
   within?: string;
   value: string;
   label?: string;
@@ -183,6 +183,7 @@ export interface VideoConfig {
   waitFor?: string | ElementTarget;
   output?: string;
   thumbnail?: { time?: number; enabled?: boolean };
+  profile?: string;
   include?: string[];
   theme?: ThemeConfig;
   sfx?: SfxConfig;
@@ -198,6 +199,7 @@ export interface WebreelConfig {
   viewport?: { width: number; height: number };
   theme?: ThemeConfig;
   sfx?: SfxConfig;
+  profile?: string;
   include?: string[];
   defaultDelay?: number;
   clickDwell?: number;

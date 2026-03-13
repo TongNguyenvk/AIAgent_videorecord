@@ -4,7 +4,9 @@
   "title": "webreel Configuration",
   "description": "Configuration file for webreel - record scripted browser videos as MP4/GIF/WebM. String values support environment variable substitution via $VAR or ${VAR} syntax. Set CHROME_PATH or FFMPEG_PATH to override auto-downloaded binaries.",
   "type": "object",
-  "required": ["videos"],
+  "required": [
+    "videos"
+  ],
   "properties": {
     "$schema": {
       "type": "string",
@@ -82,7 +84,10 @@
         },
         {
           "type": "object",
-          "required": ["width", "height"],
+          "required": [
+            "width",
+            "height"
+          ],
           "properties": {
             "width": {
               "type": "integer",
@@ -114,7 +119,10 @@
         },
         "hotspot": {
           "type": "string",
-          "enum": ["top-left", "center"],
+          "enum": [
+            "top-left",
+            "center"
+          ],
           "description": "Where the click point lands relative to the cursor image. Use 'center' for circle/dot cursors.",
           "default": "top-left"
         }
@@ -157,7 +165,10 @@
             },
             "position": {
               "type": "string",
-              "enum": ["top", "bottom"],
+              "enum": [
+                "top",
+                "bottom"
+              ],
               "description": "Position of the keystroke HUD.",
               "default": "bottom"
             }
@@ -174,7 +185,12 @@
           "oneOf": [
             {
               "type": "integer",
-              "enum": [1, 2, 3, 4]
+              "enum": [
+                1,
+                2,
+                3,
+                4
+              ]
             },
             {
               "type": "string",
@@ -188,7 +204,12 @@
           "oneOf": [
             {
               "type": "integer",
-              "enum": [1, 2, 3, 4]
+              "enum": [
+                1,
+                2,
+                3,
+                4
+              ]
             },
             {
               "type": "string",
@@ -218,7 +239,10 @@
     },
     "video": {
       "type": "object",
-      "required": ["url", "steps"],
+      "required": [
+        "url",
+        "steps"
+      ],
       "properties": {
         "url": {
           "type": "string",
@@ -362,7 +386,10 @@
     },
     "stepPause": {
       "type": "object",
-      "required": ["action", "ms"],
+      "required": [
+        "action",
+        "ms"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -384,7 +411,9 @@
     },
     "stepClick": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -395,7 +424,20 @@
           "description": "Visible text to find and click."
         },
         "selector": {
-          "type": "string",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
           "description": "CSS selector to find and click."
         },
         "within": {
@@ -421,17 +463,24 @@
       },
       "oneOf": [
         {
-          "required": ["text"]
+          "required": [
+            "text"
+          ]
         },
         {
-          "required": ["selector"]
+          "required": [
+            "selector"
+          ]
         }
       ],
       "additionalProperties": false
     },
     "stepKey": {
       "type": "object",
-      "required": ["action", "key"],
+      "required": [
+        "action",
+        "key"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -469,7 +518,11 @@
     },
     "stepDrag": {
       "type": "object",
-      "required": ["action", "from", "to"],
+      "required": [
+        "action",
+        "from",
+        "to"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -497,7 +550,10 @@
     },
     "stepType": {
       "type": "object",
-      "required": ["action", "text"],
+      "required": [
+        "action",
+        "text"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -509,7 +565,20 @@
           "description": "Text to type character by character."
         },
         "selector": {
-          "type": "string",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
           "description": "CSS selector of the element to click before typing."
         },
         "within": {
@@ -535,7 +604,9 @@
     },
     "stepScroll": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -554,7 +625,20 @@
           "description": "Visible text of the element to scroll."
         },
         "selector": {
-          "type": "string",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
           "description": "CSS selector of element to scroll."
         },
         "within": {
@@ -575,14 +659,29 @@
     },
     "stepWait": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
         "action": {
           "type": "string",
           "const": "wait"
         },
         "selector": {
-          "type": "string",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
           "description": "CSS selector to wait for."
         },
         "text": {
@@ -611,17 +710,23 @@
       },
       "oneOf": [
         {
-          "required": ["selector"]
+          "required": [
+            "selector"
+          ]
         },
         {
-          "required": ["text"]
+          "required": [
+            "text"
+          ]
         }
       ],
       "additionalProperties": false
     },
     "stepMoveTo": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -632,7 +737,20 @@
           "description": "Visible text of the target element."
         },
         "selector": {
-          "type": "string",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
           "description": "CSS selector of the target element."
         },
         "within": {
@@ -651,17 +769,24 @@
       },
       "oneOf": [
         {
-          "required": ["text"]
+          "required": [
+            "text"
+          ]
         },
         {
-          "required": ["selector"]
+          "required": [
+            "selector"
+          ]
         }
       ],
       "additionalProperties": false
     },
     "stepScreenshot": {
       "type": "object",
-      "required": ["action", "output"],
+      "required": [
+        "action",
+        "output"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -686,7 +811,10 @@
     },
     "stepNavigate": {
       "type": "object",
-      "required": ["action", "url"],
+      "required": [
+        "action",
+        "url"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -711,7 +839,9 @@
     },
     "stepHover": {
       "type": "object",
-      "required": ["action"],
+      "required": [
+        "action"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -722,7 +852,20 @@
           "description": "Visible text of the element to hover."
         },
         "selector": {
-          "type": "string",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
           "description": "CSS selector of the element to hover."
         },
         "within": {
@@ -741,17 +884,24 @@
       },
       "oneOf": [
         {
-          "required": ["text"]
+          "required": [
+            "text"
+          ]
         },
         {
-          "required": ["selector"]
+          "required": [
+            "selector"
+          ]
         }
       ],
       "additionalProperties": false
     },
     "stepSelect": {
       "type": "object",
-      "required": ["action", "value"],
+      "required": [
+        "action",
+        "value"
+      ],
       "properties": {
         "action": {
           "type": "string",
@@ -762,8 +912,20 @@
           "description": "Visible text of the <select> element."
         },
         "selector": {
-          "type": "string",
-          "minLength": 1,
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
           "description": "CSS selector of the <select> element."
         },
         "within": {
@@ -786,10 +948,14 @@
       },
       "oneOf": [
         {
-          "required": ["text"]
+          "required": [
+            "text"
+          ]
         },
         {
-          "required": ["selector"]
+          "required": [
+            "selector"
+          ]
         }
       ],
       "additionalProperties": false
@@ -802,7 +968,20 @@
           "description": "Visible text to match."
         },
         "selector": {
-          "type": "string",
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
           "description": "CSS selector to match."
         },
         "within": {
@@ -812,10 +991,14 @@
       },
       "oneOf": [
         {
-          "required": ["text"]
+          "required": [
+            "text"
+          ]
         },
         {
-          "required": ["selector"]
+          "required": [
+            "selector"
+          ]
         }
       ],
       "additionalProperties": false

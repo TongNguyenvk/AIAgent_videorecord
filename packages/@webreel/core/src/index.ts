@@ -27,6 +27,7 @@ export {
   navigate,
   waitForSelector,
   waitForText,
+  waitForInteractive,
   findElementByText,
   findElementBySelector,
   moveCursorTo,
@@ -35,6 +36,7 @@ export {
   typeText,
   dragFromTo,
   captureScreenshot,
+  buildElementExpression,
 } from "./actions.js";
 export { Recorder } from "./recorder.js";
 export { InteractionTimeline, type TimelineData } from "./timeline.js";

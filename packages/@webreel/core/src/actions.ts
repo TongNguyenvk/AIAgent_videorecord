@@ -127,7 +127,32 @@ export function buildElementExpression(selector: string, within?: string): strin
     
     return `(() => { try { const result = document.evaluate(${JSON.stringify(fixedXpath)}, ${scopeExpr}, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue; if (!result) console.warn('[Webreel] XPath returned null:', ${JSON.stringify(fixedXpath)}); return result; } catch (e) { console.error('[Webreel] XPath error:', e.message, 'for:', ${JSON.stringify(fixedXpath)}); return null; } })()`;
   } else {
-    return `(${scopeExpr}.querySelector(${JSON.stringify(selector)}))`;
+    // Shadow-piercing querySelector
+    return `(() => {
+      const selector = ${JSON.stringify(selector)};
+      const root = ${scopeExpr};
+      if (!root) return null;
+      
+      const query = (node) => {
+        if (!node) return null;
+        // 1. Check current root
+        const found = node.querySelector(selector);
+        if (found) return found;
+        
+        // 2. Recursively check all shadow roots
+        const all = node.querySelectorAll('*');
+        for (let i = 0; i < all.length; i++) {
+          const el = all[i];
+          if (el.shadowRoot) {
+            const foundInShadow = query(el.shadowRoot);
+            if (foundInShadow) return foundInShadow;
+          }
+        }
+        return null;
+      };
+      
+      return query(root);
+    })()`;
   }
 }
 
@@ -645,6 +670,20 @@ export async function pressKey(
     modifiers: flag,
   });
 
+  // WORKAROUND FOR REACT: Dispatch synthetic JS events for Enter
+  if (mainKey === "Enter" || mainKey === "enter") {
+    await client.Runtime.evaluate({
+      expression: `(() => {
+        const active = document.activeElement;
+        if (active) {
+          active.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+          active.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+          active.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true }));
+        }
+      })()`,
+    });
+  }
+
   await pause(800);
   if (ctx.isRecording) {
     getTimeline(ctx).hideHud();
@@ -718,17 +757,10 @@ export async function typeText(
       keyCode = 0;
     }
 
-    await client.Input.dispatchKeyEvent({
-      type: "rawKeyDown",
-      key: char,
-      code,
-      windowsVirtualKeyCode: keyCode,
-    });
-    await client.Input.dispatchKeyEvent({
-      type: "char",
-      key: char,
-      text: char,
-    });
+    // Use Input.insertText for reliable text insertion on all web components
+    // (works on Shadow DOM, custom elements like YouTube's yt-searchbox, etc.)
+    await client.Input.insertText({ text: char });
+    // Dispatch keyUp for visual timeline/animation tracking
     await client.Input.dispatchKeyEvent({
       type: "keyUp",
       key: char,
@@ -748,6 +780,74 @@ export async function typeText(
       await pause(humanDelay());
     }
   }
+}
+
+export async function injectType(
+  ctx: RecordingContext,
+  client: CDPClient,
+  text: string,
+  selector?: string | string[],
+  within?: string,
+): Promise<void> {
+  let targetBox: BoundingBox | null = null;
+  let resolvedSelector = "";
+
+  if (selector) {
+    const selectors = Array.isArray(selector) ? selector : [selector];
+    for (const sel of selectors) {
+      targetBox = await findElementBySelector(client, sel, within);
+      if (targetBox) {
+        resolvedSelector = sel;
+        break;
+      }
+    }
+  }
+
+  if (!targetBox) {
+    throw new Error(`Could not find element for injectType: ${selector}`);
+  }
+
+  const cx = Math.round(targetBox.x + targetBox.width / 2);
+  const cy = Math.round(targetBox.y + targetBox.height / 2);
+
+  // Move cursor to element for visual feedback
+  await moveCursorTo(ctx, client, cx, cy);
+  await pause(100);
+
+  const expr = buildElementExpression(resolvedSelector, within);
+
+  await client.Runtime.evaluate({
+    expression: `(() => {
+      const el = ${expr};
+      if (!el) return;
+      
+      // 1. Focus element
+      el.focus();
+      if (typeof el.select === 'function') el.select();
+      
+      // 2. Inject text using insertText (most reliable for contenteditable/frameworks)
+      try {
+        if (!document.execCommand('insertText', false, ${JSON.stringify(text)})) {
+          throw new Error('execCommand returned false');
+        }
+      } catch (e) {
+        // Fallback for cases where execCommand fails
+        if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
+          el.value = ${JSON.stringify(text)};
+        } else {
+          el.textContent = ${JSON.stringify(text)};
+        }
+      }
+      
+      // 3. Trigger events for framework synchronization
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`,
+  });
+
+  // Mark event for timeline
+  ctx.markEvent("key");
+  await pause(500);
 }
 
 export async function dragFromTo(

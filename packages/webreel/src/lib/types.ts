@@ -51,6 +51,16 @@ export interface StepType {
   description?: string;
 }
 
+export interface StepInjectType {
+  action: "inject_type";
+  text: string;
+  selector?: string | string[];
+  within?: string;
+  label?: string;
+  delay?: number;
+  description?: string;
+}
+
 export interface StepScroll {
   action: "scroll";
   x?: number;
@@ -133,7 +143,8 @@ export type Step =
   | StepScreenshot
   | StepNavigate
   | StepHover
-  | StepSelect;
+  | StepSelect
+  | StepInjectType;
 
 export interface CursorConfig {
   image?: string;
@@ -184,6 +195,7 @@ export interface VideoConfig {
   output?: string;
   thumbnail?: { time?: number; enabled?: boolean };
   profile?: string;
+  cdpUrl?: string;
   include?: string[];
   theme?: ThemeConfig;
   sfx?: SfxConfig;

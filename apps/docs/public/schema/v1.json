@@ -368,6 +368,9 @@
         },
         {
           "$ref": "#/$defs/stepSelect"
+        },
+        {
+          "$ref": "#/$defs/stepInjectType"
         }
       ]
     },
@@ -958,6 +961,55 @@
           ]
         }
       ],
+      "additionalProperties": false
+    },
+    "stepInjectType": {
+      "type": "object",
+      "required": [
+        "action",
+        "text"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "inject_type"
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Text to inject directly into the element via JS evaluate. Bypasses standard typing for complex UI elements like Shadow DOM or contenteditable."
+        },
+        "selector": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "CSS selector or XPath of the element to inject text into. Supports Shadow DOM piercing."
+        },
+        "within": {
+          "type": "string",
+          "description": "CSS selector to scope the search."
+        },
+        "label": {
+          "$ref": "#/$defs/label"
+        },
+        "delay": {
+          "$ref": "#/$defs/delay"
+        },
+        "description": {
+          "$ref": "#/$defs/description"
+        }
+      },
       "additionalProperties": false
     },
     "elementTarget": {

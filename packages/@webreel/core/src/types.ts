@@ -38,6 +38,7 @@ export type CDPClient = {
       modifiers?: number;
       commands?: string[];
     }) => Promise<void>;
+    insertText: (params: { text: string }) => Promise<void>;
   };
   Emulation: {
     setDeviceMetricsOverride: (params: {

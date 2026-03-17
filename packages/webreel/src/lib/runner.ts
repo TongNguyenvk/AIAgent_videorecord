@@ -7,6 +7,7 @@ import {
   type OverlayTheme,
   RecordingContext,
   connectCDP,
+  connectCDPUrl,
   launchChrome,
   navigate,
   waitForSelector,
@@ -30,6 +31,7 @@ import {
   DEFAULT_VIEWPORT_SIZE,
   buildElementExpression,
   waitForInteractive,
+  injectType,
 } from "@webreel/core";
 import type { VideoConfig, Step, ElementTarget } from "./types.js";
 
@@ -68,6 +70,8 @@ export function formatStep(i: number, step: Step): string {
       return `[step ${i}] hover ${step.text ? `text="${step.text}"` : `selector="${formatSelector(step.selector)}"`}${desc}`;
     case "select":
       return `[step ${i}] select "${step.selector}" value="${step.value}"${desc}`;
+    case "inject_type":
+      return `[step ${i}] inject_type "${step.text}"${step.selector ? ` selector="${formatSelector(step.selector)}"` : ""}${desc}`;
     default: {
       const _exhaustive: never = step;
       return `[step ${i}] ${(_exhaustive as Step).action}`;
@@ -187,12 +191,13 @@ export async function runVideo(
   const chrome = await launchChrome({ 
     headless: shouldRecord,
     profile: config.profile,
+    cdpUrl: config.cdpUrl,
   });
   let clientRef: CDPClient | null = null;
   let recorder: Recorder | null = null;
 
   try {
-    const client = await connectCDP(chrome.port);
+    const client = config.cdpUrl ? await connectCDPUrl(config.cdpUrl) : await connectCDP(chrome.port);
     clientRef = client;
     await client.Page.enable();
     await client.Runtime.enable();
@@ -302,9 +307,20 @@ export async function runVideo(
 
     await pause(500);
 
+    // Execution trace: record the real wall-clock time of every step
+    const executionTrace: Array<{
+      step_index: number;
+      action_type: string;
+      description?: string;
+      start_time_ms: number;
+      end_time_ms: number;
+    }> = [];
+    const recordingStartTime = Date.now();
+
     for (let i = 0; i < config.steps.length; i++) {
       const step = config.steps[i];
       if (verbose) console.log(formatStep(i, step));
+      const stepStartMs = Date.now() - recordingStartTime;
 
       try {
         switch (step.action) {
@@ -463,18 +479,53 @@ export async function runVideo(
             }
             break;
           }
+
+          case "inject_type": {
+            await injectType(ctx, client, step.text, step.selector, step.within);
+            break;
+          }
         }
         const stepDelay = "delay" in step ? step.delay : undefined;
         const postDelay = stepDelay ?? config.defaultDelay;
         if (postDelay !== undefined && postDelay > 0) {
           await pause(postDelay);
         }
+
+        // Record step timing in execution trace
+        const stepEndMs = Date.now() - recordingStartTime;
+        executionTrace.push({
+          step_index: i,
+          action_type: step.action,
+          description: "description" in step ? (step as { description?: string }).description : undefined,
+          start_time_ms: stepStartMs,
+          end_time_ms: stepEndMs,
+        });
       } catch (err) {
+        // Still record failed steps in trace
+        const stepEndMs = Date.now() - recordingStartTime;
+        executionTrace.push({
+          step_index: i,
+          action_type: step.action,
+          description: "description" in step ? (step as { description?: string }).description : undefined,
+          start_time_ms: stepStartMs,
+          end_time_ms: stepEndMs,
+        });
         throw new Error(
           `Step ${i} (${step.action}) failed at ${url}: ${err instanceof Error ? err.message : String(err)}`,
           { cause: err },
         );
       }
+    }
+
+    // Save execution trace
+    {
+      const traceDir = resolve(configDir, ".webreel", "traces");
+      mkdirSync(traceDir, { recursive: true });
+      writeFileSync(
+        resolve(traceDir, `${config.name}.trace.json`),
+        JSON.stringify(executionTrace, null, 2),
+      );
+      console.log(`Execution trace: ${resolve(traceDir, `${config.name}.trace.json`)}`);
     }
 
     if (recorder) {
@@ -523,10 +574,12 @@ export async function runVideo(
         console.warn("Failed to close CDP client:", err);
       }
     }
-    try {
-      chrome.kill();
-    } catch (err) {
-      console.warn("Failed to kill Chrome process:", err);
+    if (!config.cdpUrl) {
+      try {
+        chrome.kill();
+      } catch (err) {
+        console.warn("Failed to kill Chrome process:", err);
+      }
     }
   }
 }

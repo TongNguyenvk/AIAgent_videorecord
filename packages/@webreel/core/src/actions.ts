@@ -738,6 +738,8 @@ export async function typeText(
   text: string,
   delayMs = 120,
 ): Promise<void> {
+  const baseDelay = delayMs;
+  
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
     const charInfo = CHAR_CODES[char];
@@ -757,9 +759,9 @@ export async function typeText(
       keyCode = 0;
     }
 
-    // Use Input.insertText for reliable text insertion on all web components
-    // (works on Shadow DOM, custom elements like YouTube's yt-searchbox, etc.)
+    // Use Input.insertText for reliable text insertion
     await client.Input.insertText({ text: char });
+    
     // Dispatch keyUp for visual timeline/animation tracking
     await client.Input.dispatchKeyEvent({
       type: "keyUp",
@@ -767,17 +769,22 @@ export async function typeText(
       code,
       windowsVirtualKeyCode: keyCode,
     });
+    
     ctx.markEvent("key");
+
+    // Realistic typing jitter: +/- 20% of baseDelay
+    const jitter = baseDelay * 0.2;
+    const finalDelay = baseDelay + (Math.random() * jitter * 2 - jitter);
+
     if (ctx.isRecording) {
       const waitStart = Date.now();
       await getTimeline(ctx).waitForNextTick();
       const tickElapsed = Date.now() - waitStart;
-      const delay = humanDelay();
-      if (delay > tickElapsed) {
-        await pause(delay - tickElapsed);
+      if (finalDelay > tickElapsed) {
+        await pause(finalDelay - tickElapsed);
       }
     } else {
-      await pause(humanDelay());
+      await pause(finalDelay);
     }
   }
 }

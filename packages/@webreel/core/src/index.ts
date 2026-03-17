@@ -9,7 +9,7 @@ export {
   DEFAULT_CURSOR_SIZE,
   DEFAULT_HUD_THEME,
 } from "./types.js";
-export { connectCDP } from "./cdp.js";
+export { connectCDP, connectCDPUrl } from "./cdp.js";
 export {
   launchChrome,
   ensureChrome,
@@ -37,6 +37,7 @@ export {
   dragFromTo,
   captureScreenshot,
   buildElementExpression,
+  injectType,
 } from "./actions.js";
 export { Recorder } from "./recorder.js";
 export { InteractionTimeline, type TimelineData } from "./timeline.js";

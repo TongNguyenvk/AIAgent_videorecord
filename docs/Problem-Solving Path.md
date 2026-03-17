@@ -37,4 +37,30 @@ Tài liệu này tổng hợp các lỗi đã ghi nhận từ giai đoạn đầ
 
 ### 2.4. Khựng Timing Do React Rendering
 - **Vấn đề:** Webreel chọc vào DOM và gõ nội dung trước khi React kịp render giao diện (Race condition).
-- **Sửa chữa:** Bổ sung tính năng "Auto-wait (Polling)" tới 5 giây vào hàm `resolveTarget` trong `runner.ts` giúp Webreel kiên nhẫn đợi element xuất hiện giống hệt cơ chế của Playwright The.
+- **Sửa chữa:** Bổ sung tính năng "Auto-wait (Polling)" tới 5 giây vào hàm `resolveTarget` trong `runner.ts` giúp Webreel kiên nhẫn đợi element xuất hiện giống hệt cơ chế của Playwright.
+
+### 2.5. Xử Lý UI Phức Tạp (Shadow DOM & ContentEditable)
+- **Vấn đề:** Các UI đặc biệt của Google (Gmail Compose, Google Docs) sử dụng Shadow DOM và `contenteditable` khiến Browser-Use "không thấy" hoặc không thể gõ chữ dù đã thấy selector.
+- **Giải pháp (Kiến trúc "Tiêm Mã Ngữ Nghĩa"):**
+  - Ưu tiên trích xuất **Bộ chọn Ngữ nghĩa** (Aria-label) thay vì CSS structural path.
+  - Sử dụng `CDP Runtime.evaluate` để tiêm văn bản trực tiếp qua lệnh `insertText` hoặc trigger native events.
+  - **Kết quả:** Vượt qua được rào cản của React/Shadow DOM mà không cần dùng OCR nặng nề, giữ video quay mượt mà và chính xác.
+
+
+### 3.1. Lỗi Lệch Lời Thoại "One Step Ahead"
+- **Vấn đề:** Lời thoại thuyết minh cho trang mới lại bắt đầu đọc khi đang ở trang cũ (ngay khi nhấn nút chuyển trang). Điều này khiến người xem cảm thấy âm thanh đi trước hình ảnh.
+- **Nguyên nhân:** Parser `bu_to_webreel.py` đính kèm mô tả (`description`) vào hành động `click` chuyển trang. AI Reviewer sau đó chèn âm thanh bắt đầu từ thời điểm hành động đó diễn ra.
+- **Sửa chữa:** Tách biệt lời thoại (`save_narration`) thành các bước `pause` (1s) đứng độc lập trong Webreel config. Lời thoại chỉ bắt đầu khi người dùng thực sự đã đặt chân lên slide/trang mới.
+
+### 3.2. Instability & TTS 404 (FPT.AI)
+- **Vấn đề:** FPT.AI đôi khi trả về lỗi 404 hoặc "Đang xử lý" quá lâu khiến quá trình download audio bị crash.
+- **Sửa chữa:** 
+  - Triển khai cơ chế **Retry (thử lại 3 lần)** trong `tts.py`.
+  - Nâng timeout polling lên 60 giây để xử lý các đoạn text dài.
+  - Kiểm tra `Content-Type` phản hồi để phân biệt file MP3 thật sự với trang báo lỗi HTML của FPT.
+
+### 3.3. Lỗi Lồng Tiếng & Giảm Âm Lượng (ffmpeg Mix)
+- **Vấn đề:** Khi trộn nhiều kênh âm thanh thuyết minh vào video, âm lượng bị nhỏ đi đáng kể hoặc gặp lỗi cú pháp `adelay`.
+- **Sửa chữa (Trace Composer):**
+  - Chuyển sang cú pháp `adelay=delays={ms}:all=1` giúp hỗ trợ cả track Mono và Stereo đồng nhất.
+  - Bổ sung bộ lọc `volume=1.5` và tắt `normalize` trong `amix` để giữ âm lượng thuyết minh to, rõ và không bị tự động nén.

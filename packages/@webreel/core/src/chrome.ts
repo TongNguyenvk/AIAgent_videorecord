@@ -195,11 +195,37 @@ const MAX_LAUNCH_ATTEMPTS = 3;
 export interface LaunchChromeOptions {
   headless?: boolean;
   profile?: string;
+  cdpUrl?: string;
 }
 
 export async function launchChrome(
   options?: LaunchChromeOptions,
 ): Promise<ChromeInstance> {
+  if (options?.cdpUrl) {
+    console.log("[DEBUG] launchChrome: Using existing CDP URL =", options.cdpUrl);
+    let port = 9222;
+    try {
+      if (options.cdpUrl.includes("://")) {
+        port = parseInt(new URL(options.cdpUrl).port, 10);
+      } else {
+        const parts = options.cdpUrl.split(":");
+        port = parts.length > 1 ? parseInt(parts[1], 10) : parseInt(parts[0], 10);
+      }
+      if (isNaN(port)) port = 9222;
+    } catch {
+      port = 9222;
+    }
+    
+    // Return a mock instance
+    return {
+      process: null as any, // Not used when providing cdpUrl
+      port,
+      kill: () => {
+        console.log("[DEBUG] Chrome kill() ignored (external CDP)");
+      },
+    };
+  }
+
   const headless = options?.headless ?? true;
   console.log("[DEBUG] launchChrome: headless =", headless);
   const chromePath = headless ? await ensureHeadlessShell() : await ensureChrome();

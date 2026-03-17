@@ -6,13 +6,16 @@ webreel.config.json tuân thủ tuyệt đối schema v1.
 
 RÀNG BUỘC TỐI THƯỢNG:
 - Webreel schema rất nghiêm ngặt, không cho phép key lạ
-- Chỉ map các action hợp lệ: navigate, click, type, pause
-- BẮT BUỘC BỎ QUA: scroll, done, và mọi action không hợp lệ
+- Chỉ map các action hợp lệ: navigate, click, type, pause, scroll, key
+- BẮT BUỘC BỎ QUA: done, và mọi action không hợp lệ
 - Không tạo trường _unmapped_action hay bất kỳ key tự ý nào
 """
 
 import re
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_text_from_element(element_str: str | None) -> str | None:
@@ -209,7 +212,6 @@ def convert_to_webreel_config(
     
     2. Nhóm BẮT BUỘC BỎ QUA (ignore/continue):
        - done: Chỉ là cờ báo hiệu hoàn thành
-       - extract: Không có tương đương trong webreel
        - write_file: Không có tương đương trong webreel
        - Mọi action khác không nằm trong nhóm hợp lệ
     
@@ -246,7 +248,8 @@ def convert_to_webreel_config(
         # Add initial pause to show the page after loading
         steps.append({
             "action": "pause",
-            "ms": 2000
+            "ms": 2000,
+            "description": "Wait for initial page to load"
         })
     
     # Duyệt qua model_actions
@@ -258,8 +261,24 @@ def convert_to_webreel_config(
     # Tracking for deduplicating consecutive inputs
     last_input_selector = None
     last_input_text = None
+
+    # Track current narration from save_narration tool
+    current_narration = None
     
     for i, action_item in enumerate(actions):
+        # 0. HANDLE CUSTOM save_narration ACTION
+        # Convert to a standalone pause step so the audio plays AFTER arriving at the page
+        if "save_narration" in action_item:
+            narration_data = action_item["save_narration"]
+            text = narration_data.get("text", "") if isinstance(narration_data, dict) else str(narration_data)
+            logger.info(f"[Parser] Converting save_narration to standalone pause: {text[:50]}...")
+            steps.append({
+                "action": "pause",
+                "ms": 1000,
+                "description": text
+            })
+            continue
+
         # Lấy thông tin element
         element_str = str(action_item.get("interacted_element", ""))
         
@@ -272,12 +291,14 @@ def convert_to_webreel_config(
             if url and (url != start_url or navigated_to_start):
                 steps.append({
                     "action": "navigate",
-                    "url": url
+                    "url": url,
+                    "description": f"Navigate to {url}"
                 })
                 # Add pause after navigation
                 steps.append({
                     "action": "pause",
-                    "ms": 2000
+                    "ms": 2000,
+                    "description": "Wait for page to load"
                 })
             elif url == start_url:
                 navigated_to_start = True
@@ -287,15 +308,21 @@ def convert_to_webreel_config(
             selector = _extract_selector_from_element(element_str)
             
             if selector:
-                # Add explicit click (Webreel's click natively animates the cursor to it)
+                # Extract text label for description
+                element_text = _extract_text_from_element(element_str)
+                click_desc = f"Click on {element_text}" if element_text else "Click element"
+                
+                # Add explicit click
                 steps.append({
                     "action": "click",
-                    "selector": selector
+                    "selector": selector,
+                    "description": click_desc
                 })
                 # Add longer pause after click to show the result page
                 steps.append({
                     "action": "pause",
-                    "ms": 5000
+                    "ms": 5000,
+                    "description": "Wait after click"
                 })
         
         # 3. INPUT (type text)
@@ -307,22 +334,18 @@ def convert_to_webreel_config(
             if text and selector:
                 clean_text = text.replace('\n', '')
                 
-                # Deduplicate consecutive input actions to the same selector with the same text
+                # Deduplicate consecutive input actions
                 if selector == last_input_selector and clean_text == last_input_text:
                     continue
                     
                 last_input_selector = selector
                 last_input_text = clean_text
-                # Add a pause before typing to let page stabilize
+                
                 steps.append({
                     "action": "pause",
                     "ms": 500
                 })
                 
-                # Click on the input to establish focus first.
-                # We use a separate click step (not selector on type) because
-                # Webreel's internal type+selector does click+focus+JS dispatch
-                # which breaks complex inputs like YouTube's search bar.
                 steps.append({
                     "action": "click",
                     "selector": selector
@@ -336,12 +359,12 @@ def convert_to_webreel_config(
                 has_enter = '\n' in text
                 clean_text = text.replace('\n', '')
                 
-                # Type the text safely (no selector, so Webreel types at current focus from previous click)
                 if clean_text:
                     steps.append({
                         "action": "type",
                         "text": clean_text,
-                        "charDelay": 50
+                        "charDelay": 50,
+                        "description": f"Type '{clean_text[:30]}'"
                     })
                 
                 # Check if we need to press Enter from the newline OR from the next action

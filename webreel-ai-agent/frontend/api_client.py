@@ -86,7 +86,16 @@ def submit_job(
         ) from e
     
     except RequestException as e:
-        raise APIClientError(f"API request failed: {str(e)}") from e
+        # Extract detailed error from response body (e.g. 422 validation errors)
+        detail = str(e)
+        if hasattr(e, "response") and e.response is not None:
+            try:
+                error_body = e.response.json()
+                if "detail" in error_body:
+                    detail = str(error_body["detail"])
+            except Exception:
+                pass
+        raise APIClientError(f"API request failed: {detail}") from e
 
 
 def get_job_status(
@@ -231,3 +240,103 @@ def check_backend_health(timeout: int = 5) -> bool:
         return response.status_code == 200
     except:
         return False
+
+
+def cancel_job(job_id: str, timeout: int = DEFAULT_TIMEOUT) -> Dict[str, Any]:
+    """
+    Cancel a running job.
+    
+    Args:
+        job_id: UUID of the job to cancel
+        timeout: Request timeout in seconds
+    
+    Returns:
+        Dictionary containing:
+            - job_id: str
+            - status: str
+            - message: str
+    
+    Raises:
+        ConnectionFailedError: If connection to backend fails
+        TimeoutError: If request times out
+        APIClientError: For other API errors (e.g. job not found, already completed)
+    """
+    try:
+        response = requests.delete(
+            f"{BACKEND_URL}/api/jobs/{job_id}",
+            timeout=timeout
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    except ConnectionError as e:
+        raise ConnectionFailedError(
+            f"Failed to connect to backend at {BACKEND_URL}"
+        ) from e
+    
+    except Timeout as e:
+        raise TimeoutError(
+            f"Request timed out after {timeout} seconds"
+        ) from e
+    
+    except RequestException as e:
+        detail = str(e)
+        if hasattr(e, "response") and e.response is not None:
+            try:
+                error_body = e.response.json()
+                if "detail" in error_body:
+                    detail = str(error_body["detail"])
+            except Exception:
+                pass
+        raise APIClientError(f"Failed to cancel job: {detail}") from e
+
+
+def submit_review(job_id: str, tts_script: list, timeout: int = DEFAULT_TIMEOUT) -> Dict[str, Any]:
+    """
+    Submit reviewed TTS script and resume pipeline.
+    
+    Args:
+        job_id: UUID of the job
+        tts_script: List of reviewed narration segments
+        timeout: Request timeout in seconds
+    
+    Returns:
+        Dictionary containing:
+            - job_id: str
+            - message: str
+            - segment_count: int
+    
+    Raises:
+        ConnectionFailedError: If connection to backend fails
+        TimeoutError: If request times out
+        APIClientError: For other API errors
+    """
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/api/jobs/{job_id}/review",
+            json={"tts_script": tts_script},
+            timeout=timeout
+        )
+        response.raise_for_status()
+        return response.json()
+    
+    except ConnectionError as e:
+        raise ConnectionFailedError(
+            f"Failed to connect to backend at {BACKEND_URL}"
+        ) from e
+    
+    except Timeout as e:
+        raise TimeoutError(
+            f"Request timed out after {timeout} seconds"
+        ) from e
+    
+    except RequestException as e:
+        detail = str(e)
+        if hasattr(e, "response") and e.response is not None:
+            try:
+                error_body = e.response.json()
+                if "detail" in error_body:
+                    detail = str(error_body["detail"])
+            except Exception:
+                pass
+        raise APIClientError(f"Failed to submit review: {detail}") from e

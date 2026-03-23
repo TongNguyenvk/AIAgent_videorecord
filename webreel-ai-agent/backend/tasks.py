@@ -4,6 +4,7 @@ Handles asynchronous execution of the 6-phase pipeline with progress tracking.
 """
 
 import sys
+import asyncio
 from pathlib import Path
 from datetime import datetime, timezone
 import logging
@@ -76,15 +77,36 @@ async def execute_pipeline_task(
             """Callback function called by pipeline at each phase."""
             phase_name = PHASE_NAMES.get(phase, f"Phase {phase}")
             
+            # Special handling for Phase 2.5 - load and store tts_script
+            tts_script_data = None
+            if phase == 2.5:
+                # Try to load tts_script.json
+                try:
+                    import json
+                    from pathlib import Path
+                    output_dir = Path(__file__).parent.parent / "output" / video_name
+                    tts_script_path = output_dir / "tts_script.json"
+                    if tts_script_path.exists():
+                        with open(tts_script_path, "r", encoding="utf-8") as f:
+                            tts_script_data = json.load(f)
+                except Exception as e:
+                    logger.warning(f"Failed to load tts_script.json: {e}")
+            
             # Update job progress
-            await update_job_status_func(job_id, {
+            progress_update = {
                 "progress": {
                     "current_phase": phase,
                     "phase_name": phase_name,
                     "message": message,
                     "logs": []
                 }
-            })
+            }
+            
+            # Add tts_script to progress if Phase 2.5
+            if tts_script_data:
+                progress_update["progress"]["tts_script"] = tts_script_data
+            
+            await update_job_status_func(job_id, progress_update)
             
             logger.info(
                 f"Job {job_id}: Phase {phase} ({phase_name}) - {message}",
@@ -102,15 +124,19 @@ async def execute_pipeline_task(
         
         # Execute pipeline with progress callback
         # NOTE: enable_review is always False for web UI (CLI-only feature)
+        # Read CDP URL from environment variable (for Docker), fallback to config or localhost
+        import os
+        cdp_url = os.getenv("CHROME_CDP_URL", config.get("cdp_url", "http://localhost:9222"))
         video_path = await run_pipeline_v3(
             task=task,
             video_name=video_name,
-            cdp_url=config.get("cdp_url", "http://localhost:9222"),
+            cdp_url=cdp_url,
             enable_tts=config.get("enable_tts", True),
             tts_voice=config.get("tts_voice", "banmai"),
             tts_engine=config.get("tts_engine", "fpt"),
             padding_ms=config.get("padding_ms", 300),
             enable_review=False,
+            job_id=job_id,
             progress_callback=progress_callback
         )
         
@@ -142,6 +168,46 @@ async def execute_pipeline_task(
         )
         
         # Send final completion broadcast
+        if broadcast_progress_func:
+            await broadcast_progress_func(job_id)
+    
+    except asyncio.CancelledError:
+        # Task was force cancelled (killed immediately)
+        error_message = "Job force killed by user"
+        
+        logger.info(
+            f"Job {job_id}: Task cancelled (force kill)",
+            extra={"job_id": job_id}
+        )
+        
+        # Update job status to cancelled
+        await update_job_status_func(job_id, {
+            "status": "cancelled",
+            "error": error_message,
+            "completed_at": datetime.now(timezone.utc).isoformat()
+        })
+        
+        # Broadcast final state
+        if broadcast_progress_func:
+            await broadcast_progress_func(job_id)
+        
+        # Re-raise to properly cancel the task
+        raise
+        
+    except SystemExit as e:
+        # Pipeline was stopped by user
+        error_message = str(e) or "Pipeline stopped by user"
+        
+        logger.info(
+            f"Job {job_id}: Pipeline stopped by user",
+            extra={
+                "job_id": job_id,
+                "message": error_message
+            }
+        )
+        
+        # Job status should already be set to 'cancelled' by cancel endpoint
+        # Just broadcast the final state
         if broadcast_progress_func:
             await broadcast_progress_func(job_id)
         

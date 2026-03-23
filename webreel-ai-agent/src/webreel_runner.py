@@ -15,27 +15,35 @@ import requests
 logger = logging.getLogger(__name__)
 
 OUTPUT_DIR = Path("output")
-CDP_URL = "http://localhost:9222"
+# Read CDP URL from environment variable (for Docker), fallback to localhost
+CDP_URL = os.getenv("CHROME_CDP_URL", "http://localhost:9222")
 
 
-def check_chrome_debug_running(auto_start: bool = True) -> bool:
+def check_chrome_debug_running(auto_start: bool = True, cdp_url: str = None) -> bool:
     """
     Check if Chrome is running with debug port enabled.
     If not running and auto_start=True, automatically start Chrome.
+    
+    Args:
+        auto_start: Whether to auto-start Chrome if not running (only works on Windows host)
+        cdp_url: CDP URL to check (defaults to CDP_URL global if not provided)
     """
+    # Use provided cdp_url or fall back to global CDP_URL
+    check_url = cdp_url or CDP_URL
+    
     try:
-        response = requests.get(f"{CDP_URL}/json/version", timeout=2)
+        response = requests.get(f"{check_url}/json/version", timeout=2)
         chrome_info = response.json()
-        logger.info(f"Chrome detected: {chrome_info.get('Browser', 'Unknown')}")
+        logger.info(f"Chrome detected at {check_url}: {chrome_info.get('Browser', 'Unknown')}")
         return True
     except Exception as e:
-        logger.warning(f"Cannot connect to Chrome debug port: {e}")
+        logger.warning(f"Cannot connect to Chrome debug port at {check_url}: {e}")
 
         if not auto_start:
             logger.error("Please run start_chrome_debug.bat first!")
             return False
 
-        # Auto-start Chrome with debug port
+        # Auto-start Chrome with debug port (only on Windows host, not in Docker)
         logger.info("Attempting to start Chrome with debug port...")
 
         if os.name == "nt":  # Windows
@@ -63,7 +71,7 @@ def check_chrome_debug_running(auto_start: bool = True) -> bool:
                 for i in range(10):
                     time.sleep(1)
                     try:
-                        response = requests.get(f"{CDP_URL}/json/version", timeout=2)
+                        response = requests.get(f"{check_url}/json/version", timeout=2)
                         chrome_info = response.json()
                         logger.info(f"Chrome ready: {chrome_info.get('Browser', 'Unknown')}")
                         return True
@@ -78,7 +86,9 @@ def check_chrome_debug_running(auto_start: bool = True) -> bool:
                 logger.error("Please run start_chrome_debug.bat manually!")
                 return False
         else:
-            logger.error("Auto-start only supported on Windows. Please start Chrome manually.")
+            # Running in Docker/Linux - cannot auto-start Chrome on host
+            logger.error("Running in Docker container. Chrome must be started on the host machine.")
+            logger.error("Please run start-chrome-docker.bat on your Windows host!")
             return False
 
 

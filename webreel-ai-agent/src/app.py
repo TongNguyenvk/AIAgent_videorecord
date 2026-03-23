@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -23,14 +24,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # Import API client and WebSocket client
 from frontend.api_client import (
-    submit_job, get_job_status, list_jobs, check_backend_health,
+    submit_job, get_job_status, list_jobs, check_backend_health, cancel_job, submit_review,
     APIClientError, ConnectionFailedError, TimeoutError as APITimeoutError
 )
 from frontend.websocket_client import track_progress
 from src.webreel_runner import OUTPUT_DIR
 
-# Default CDP URL
-CDP_URL = "http://localhost:9222"
+# Default CDP URL - read from environment variable (for Docker), fallback to localhost
+CDP_URL = os.getenv("CHROME_CDP_URL", "http://localhost:9222")
 
 
 # ==============================================================================
@@ -94,6 +95,7 @@ TTS_VOICES_FPT = {
 PIPELINE_STEPS = [
     "Phase 1: The Scout (browser-use + narration)",
     "Phase 2: The Parser (config + tts_script)",
+    "Phase 2.5: Review TTS Script (auto-skip in web UI)",
     "Phase 3: Ground-Truth TTS (Edge/FPT)",
     "Phase 4: The Injector (exact pauses)",
     "Phase 5: The Execution (Webreel record)",
@@ -105,9 +107,18 @@ PIPELINE_STEPS = [
 # Helpers
 # ==============================================================================
 def _slugify(text: str) -> str:
-    """Convert text to a safe filename slug."""
-    slug = re.sub(r"[^\w\s-]", "", text.lower())
-    slug = re.sub(r"[\s_]+", "-", slug)
+    """Convert text to an ASCII-safe filename slug.
+    
+    Strips diacritics (Vietnamese chars) and removes non-ASCII characters
+    to satisfy backend validation pattern ^[a-zA-Z0-9_-]+$.
+    """
+    # Normalize Unicode and strip diacritics (e.g. a with accent -> a)
+    nfkd = unicodedata.normalize("NFKD", text)
+    ascii_text = nfkd.encode("ascii", "ignore").decode("ascii")
+    slug = ascii_text.lower()
+    # Keep only alphanumeric, spaces, hyphens
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
+    slug = re.sub(r"[\s]+", "-", slug)
     return slug[:40].strip("-") or "demo"
 
 
@@ -124,89 +135,51 @@ def _init_session():
         "current_job_id": None,
         "progress_tracker": None,
         "backend_healthy": check_backend_health(),
+        "review_mode": False,
+        "review_script": [],
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 
-class JobProgress:
-    """Progress tracker for API-based job execution."""
-    def __init__(self):
-        self.step = 0
-        self.msg = ""
-        self.status = "pending"
-        self.job_id = None
-        self.done = False
-        self.error = None
-        self.video_url = None
-        
-    def update_from_api(self, job_data: dict):
-        """Update progress from API response."""
-        self.status = job_data.get("status", "pending")
-        
-        # Map status to done flag
-        if self.status in ["completed", "failed", "interrupted"]:
-            self.done = True
-        
-        # Extract progress information
-        if "progress" in job_data and job_data["progress"]:
-            progress = job_data["progress"]
-            self.step = progress.get("current_phase", 0)
-            self.msg = progress.get("message", "")
-        
-        # Extract error if failed
-        if self.status == "failed" and "error" in job_data:
-            self.error = job_data["error"]
-        
-        # Extract video URL if completed
-        if self.status == "completed" and "result" in job_data:
-            result = job_data["result"]
-            self.video_url = result.get("video_url", "")
+# ---------------------------------------------------------------------------
+# Thread-safe progress storage for WebSocket callbacks
+# ---------------------------------------------------------------------------
+import threading
+
+_progress_lock = threading.Lock()
+_progress_data: dict[str, dict] = {}  # job_id -> latest job_data
 
 
-def _handle_progress_update(job_data: dict):
-    """Handle progress update from WebSocket or polling."""
-    if "pipeline_progress" not in st.session_state:
+def _ws_progress_callback(job_data: dict):
+    """WebSocket callback - writes to thread-safe dict (NOT st.session_state)."""
+    job_id = job_data.get("job_id", "")
+    if not job_id:
         return
+    with _progress_lock:
+        _progress_data[job_id] = job_data
+
+
+def _get_progress(job_id: str) -> dict | None:
+    """Read latest progress from thread-safe storage."""
+    with _progress_lock:
+        return _progress_data.get(job_id)
+
+
+def _poll_job_progress(job_id: str) -> dict:
+    """Get job status from WebSocket cache, with HTTP fallback if cache is stale."""
+    # Try WebSocket cache first
+    cached = _get_progress(job_id)
+    if cached:
+        return cached
     
-    progress = st.session_state.pipeline_progress
-    progress.update_from_api(job_data)
-    
-    # Check if job is complete
-    if progress.done:
-        # Stop the tracker
-        if st.session_state.progress_tracker:
-            st.session_state.progress_tracker.stop()
-            st.session_state.progress_tracker = None
-        
-        st.session_state.is_generating = False
-        
-        if progress.status == "completed":
-            # Get the full job details to extract video path
-            try:
-                job_details = get_job_status(progress.job_id)
-                if "result" in job_details and job_details["result"]:
-                    result = job_details["result"]
-                    video_path = result.get("video_path", "")
-                    st.session_state.video_path = video_path
-                    
-                    # Add to history
-                    history_item = {
-                        "script": job_details.get("task", ""),
-                        "path": video_path,
-                        "name": job_details.get("video_name", ""),
-                        "created_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
-                        "job_id": progress.job_id,
-                    }
-                    st.session_state.history.insert(0, history_item)
-                    _save_history(st.session_state.history)
-            except Exception as e:
-                print(f"Error fetching job details: {e}")
-        
-        elif progress.status == "failed":
-            st.session_state.error_msg = progress.error or "Job failed"
-            st.session_state.video_path = None
+    # If no cache, try HTTP as fallback (with short timeout to avoid blocking)
+    try:
+        return get_job_status(job_id, timeout=5)
+    except Exception as e:
+        # If HTTP also fails, return safe default
+        return {"status": "running", "progress": None, "error": None}
 
 
 # ==============================================================================
@@ -557,12 +530,12 @@ with tab_create:
     # --- Handle Generate ---
     if generate_btn:
         if not script_input.strip():
-            st.error("Vui lòng nhập kịch bản trước khi tạo video.")
+            st.error("Vui long nhap kich ban truoc khi tao video.")
         elif not os.environ.get("GEMINI_API_KEY") and not os.environ.get("GOOGLE_API_KEY"):
-            st.error("Cần GEMINI_API_KEY ở thanh bên trái.")
+            st.error("Can GEMINI_API_KEY o thanh ben trai.")
         elif not st.session_state.backend_healthy:
-            st.error("Backend không hoạt động. Vui lòng khởi động FastAPI backend trước.")
-            st.info("Chạy lệnh: cd webreel-ai-agent/backend && uvicorn main:app --reload")
+            st.error("Backend khong hoat dong. Vui long khoi dong FastAPI backend truoc.")
+            st.info("Chay lenh: cd webreel-ai-agent && venv\\Scripts\\python.exe -m uvicorn backend.main:app --reload")
         else:
             video_name = video_name_input.strip() or _slugify(script_input)
             
@@ -584,77 +557,254 @@ with tab_create:
                 )
                 
                 job_id = response["job_id"]
-                
-                # Create progress tracker
-                progress = JobProgress()
-                progress.job_id = job_id
-                st.session_state.pipeline_progress = progress
                 st.session_state.current_job_id = job_id
                 st.session_state.is_generating = True
                 st.session_state.error_msg = None
                 st.session_state.video_path = None
+                st.session_state.progress_step = 0
+                st.session_state.progress_msg = "Job submitted..."
                 
-                # Start WebSocket progress tracking
-                tracker = track_progress(job_id, _handle_progress_update, use_fallback=True)
+                # Start WebSocket progress tracking (thread-safe)
+                tracker = track_progress(job_id, _ws_progress_callback, use_fallback=True)
                 st.session_state.progress_tracker = tracker
                 
                 st.rerun()
                 
             except ConnectionFailedError as e:
-                st.error(f"Không thể kết nối tới backend: {str(e)}")
-                st.info("Vui lòng khởi động FastAPI backend: cd webreel-ai-agent/backend && uvicorn main:app --reload")
+                st.error(f"Khong the ket noi toi backend: {str(e)}")
+                st.info("Vui long khoi dong FastAPI backend: cd webreel-ai-agent && venv\\Scripts\\python.exe -m uvicorn backend.main:app --reload")
             except APITimeoutError as e:
                 st.error(f"Timeout: {str(e)}")
             except APIClientError as e:
-                st.error(f"Lỗi API: {str(e)}")
+                st.error(f"Loi API: {str(e)}")
 
-    # --- Progress UI ---
-    if st.session_state.is_generating:
-        progress = st.session_state.get("pipeline_progress")
+    # --- Progress UI (WebSocket-driven, non-blocking) ---
+    @st.fragment(run_every=1)
+    def render_progress_ui():
+        """Fragment for progress UI - auto-refreshes every 1 second without full page reload."""
+        if not st.session_state.is_generating:
+            return
         
-        # Check if pipeline is done
-        if progress and progress.done:
-            st.session_state.is_generating = False
-            
-            if progress.error:
-                st.session_state.error_msg = progress.error
-                st.session_state.video_path = None
-            
-            st.rerun()
+        job_id = st.session_state.current_job_id
         
-        # Show progress info
-        st.info(f"Đang tạo video... Job ID: {st.session_state.current_job_id}")
-
-        step = progress.step if progress else 0
-        total = st.session_state.progress_total
-        msg = progress.msg if progress else "Đang khởi động..."
-
-        # Show progress bar
-        progress_val = step / total if total > 0 else 0
-        st.progress(progress_val, text=f"Bước {step}/{total}: {msg}")
-
-        # Show detailed steps
-        st.markdown("### Tiến trình:")
-        for i, label in enumerate(PIPELINE_STEPS, 1):
-            if i < step:
-                st.markdown(
-                    f'<div class="step-item step-done">{label}</div>',
-                    unsafe_allow_html=True,
-                )
-            elif i == step:
-                st.markdown(
-                    f'<div class="step-item step-active">{label}</div>',
-                    unsafe_allow_html=True,
-                )
+        # Get progress from WebSocket cache, with HTTP fallback if cache is stale
+        job_data = _poll_job_progress(job_id)
+        status = job_data.get("status", "pending")
+        
+        # Check if we're at Phase 2.5 (review mode)
+        is_phase_2_5 = False
+        tts_script_data = None
+        if job_data.get("progress"):
+            progress_info = job_data["progress"]
+            backend_phase = progress_info.get("current_phase", 0)
+            msg = progress_info.get("message", "")
+            
+            # Check if Phase 2.5
+            if backend_phase == 2.5:
+                is_phase_2_5 = True
+                tts_script_data = progress_info.get("tts_script", [])
+                
+                # Enter review mode
+                if not st.session_state.review_mode:
+                    st.session_state.review_mode = True
+                    st.session_state.review_script = tts_script_data.copy() if tts_script_data else []
+        
+        # If in review mode, show review UI
+        if st.session_state.review_mode and is_phase_2_5:
+            render_review_ui(job_id)
+            return
+        
+        # Normal progress UI (not in review mode)
+        # Map backend phase numbers to PIPELINE_STEPS index
+        step = 0
+        msg = "Dang khoi dong..."
+        if job_data.get("progress"):
+            progress_info = job_data["progress"]
+            backend_phase = progress_info.get("current_phase", 0)
+            msg = progress_info.get("message", "")
+            # Map: Phase 1,2 -> Step 1,2; Phase 3+ -> Step 4+ (skip Step 3 = Phase 2.5)
+            if backend_phase <= 2:
+                step = backend_phase
+            elif backend_phase == 2.5:
+                step = 3  # Phase 2.5 maps to step 3
             else:
-                st.markdown(
-                    f'<div class="step-item step-pending">{label}</div>',
-                    unsafe_allow_html=True,
-                )
+                step = backend_phase + 1  # Shift by 1 to account for Phase 2.5
+            
+            # Check if job is done
+            if status in ["completed", "failed", "interrupted", "cancelled"]:
+                st.session_state.is_generating = False
+                
+                # Stop WebSocket tracker
+                if st.session_state.get("progress_tracker"):
+                    st.session_state.progress_tracker.stop()
+                    st.session_state.progress_tracker = None
+                
+                if status == "completed":
+                    result = job_data.get("result", {})
+                    if result:
+                        video_path = result.get("video_path", "")
+                        st.session_state.video_path = video_path
+                        
+                        # Add to history
+                        history_item = {
+                            "script": job_data.get("task", ""),
+                            "path": video_path,
+                            "name": job_data.get("video_name", ""),
+                            "created_at": datetime.now().strftime("%d/%m/%Y %H:%M"),
+                            "job_id": job_id,
+                        }
+                        st.session_state.history.insert(0, history_item)
+                        _save_history(st.session_state.history)
+                    st.session_state.error_msg = None
+                
+                elif status == "failed":
+                    st.session_state.error_msg = job_data.get("error", "Job failed")
+                    st.session_state.video_path = None
+                
+                elif status == "interrupted":
+                    st.session_state.error_msg = "Job was interrupted"
+                    st.session_state.video_path = None
+                
+                elif status == "cancelled":
+                    st.session_state.error_msg = "Job was cancelled by user"
+                    st.session_state.video_path = None
+                
+                st.rerun()
+            
+            # Job still running - show progress
+            col_info, col_stop = st.columns([4, 1])
+            with col_info:
+                st.info(f"Dang tao video... Job ID: {job_id}")
+            with col_stop:
+                if st.button("Dung lai", type="secondary", use_container_width=True):
+                    try:
+                        cancel_job(job_id)
+                        st.session_state.is_generating = False
+                        st.session_state.error_msg = "Job cancelled by user"
+                        if st.session_state.get("progress_tracker"):
+                            st.session_state.progress_tracker.stop()
+                            st.session_state.progress_tracker = None
+                        st.rerun()
+                    except APIClientError as e:
+                        st.error(f"Khong the dung job: {str(e)}")
 
-        # Force refresh every 1 second
-        time.sleep(1)
-        st.rerun()
+            total = st.session_state.progress_total
+
+            # Show progress bar
+            progress_val = step / total if total > 0 else 0
+            st.progress(progress_val, text=f"Buoc {step}/{total}: {msg}")
+
+            # Show detailed steps
+            st.markdown("### Tien trinh:")
+            for i, label in enumerate(PIPELINE_STEPS, 1):
+                if i < step:
+                    st.markdown(
+                        f'<div class="step-item step-done">{label}</div>',
+                        unsafe_allow_html=True,
+                    )
+                elif i == step:
+                    st.markdown(
+                        f'<div class="step-item step-active">{label}</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f'<div class="step-item step-pending">{label}</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            # WebSocket status indicator
+            if st.session_state.get("progress_tracker"):
+                if st.session_state.progress_tracker.is_connected():
+                    st.caption("WebSocket: Connected")
+                else:
+                    st.caption("WebSocket: Reconnecting...")
+    
+    def render_review_ui(job_id: str):
+        """Render Phase 2.5 review UI."""
+        st.info("Phase 2.5: Xem lai va chinh sua cac doan thuyet minh")
+        
+        st.markdown("### Cac doan thuyet minh:")
+        
+        # Display each segment with edit/delete buttons
+        for i, segment in enumerate(st.session_state.review_script):
+            with st.expander(f"Doan {i}: {segment.get('text', '')[:60]}...", expanded=False):
+                # Edit text
+                new_text = st.text_area(
+                    f"Noi dung doan {i}:",
+                    value=segment.get("text", ""),
+                    key=f"segment_{i}",
+                    height=100
+                )
+                
+                col_save, col_delete = st.columns([1, 1])
+                with col_save:
+                    if st.button(f"Luu thay doi", key=f"save_{i}"):
+                        st.session_state.review_script[i]["text"] = new_text
+                        st.success(f"Da luu doan {i}")
+                        st.rerun()
+                
+                with col_delete:
+                    if st.button(f"Xoa doan nay", key=f"delete_{i}", type="secondary"):
+                        st.session_state.review_script.pop(i)
+                        # Re-index
+                        for idx, seg in enumerate(st.session_state.review_script):
+                            seg["narration_index"] = idx
+                        st.success(f"Da xoa doan {i}")
+                        st.rerun()
+        
+        # Add new segment button
+        st.markdown("---")
+        with st.expander("Them doan thuyet minh moi", expanded=False):
+            new_segment_text = st.text_area(
+                "Noi dung doan moi:",
+                key="new_segment_text",
+                height=100
+            )
+            if st.button("Them doan", key="add_segment"):
+                if new_segment_text.strip():
+                    new_idx = len(st.session_state.review_script)
+                    st.session_state.review_script.append({
+                        "text": new_segment_text,
+                        "narration_index": new_idx
+                    })
+                    st.success(f"Da them doan {new_idx}")
+                    st.rerun()
+                else:
+                    st.warning("Vui long nhap noi dung")
+        
+        # Submit review button
+        st.markdown("---")
+        col_submit, col_cancel = st.columns([1, 1])
+        with col_submit:
+            if st.button("Tiep tuc tao video", type="primary", use_container_width=True):
+                try:
+                    # Submit reviewed script to backend
+                    result = submit_review(job_id, st.session_state.review_script)
+                    st.session_state.review_mode = False
+                    st.success("Da gui script da chinh sua. Dang tiep tuc...")
+                    time.sleep(1)
+                    st.rerun()
+                except APIClientError as e:
+                    st.error(f"Loi khi gui review: {str(e)}")
+        
+        with col_cancel:
+            if st.button("Huy", type="secondary", use_container_width=True):
+                try:
+                    cancel_job(job_id)
+                    st.session_state.is_generating = False
+                    st.session_state.review_mode = False
+                    st.session_state.error_msg = "Job cancelled by user"
+                    if st.session_state.get("progress_tracker"):
+                        st.session_state.progress_tracker.stop()
+                        st.session_state.progress_tracker = None
+                    st.rerun()
+                except APIClientError as e:
+                    st.error(f"Khong the huy job: {str(e)}")
+    
+    # Render progress UI fragment
+    if st.session_state.is_generating:
+        render_progress_ui()
 
     # --- Error UI ---
     if st.session_state.error_msg:

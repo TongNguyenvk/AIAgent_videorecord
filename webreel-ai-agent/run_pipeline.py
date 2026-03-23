@@ -23,18 +23,62 @@ from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# Stop flag for Streamlit UI
+# Stop flag and Review pause mechanism (per-job)
 # ---------------------------------------------------------------------------
-_stop_flag = False
+_stop_flags = {}  # job_id -> bool
+_review_pause_events = {}  # job_id -> asyncio.Event
+_reviewed_scripts = {}  # job_id -> list
 
-def set_stop_flag(value: bool):
-    """Set the stop flag to interrupt pipeline execution."""
-    global _stop_flag
-    _stop_flag = value
+def set_stop_flag(job_id: str, value: bool):
+    """Set the stop flag for a specific job."""
+    global _stop_flags
+    _stop_flags[job_id] = value
 
-def get_stop_flag() -> bool:
-    """Get the current stop flag value."""
-    return _stop_flag
+def get_stop_flag(job_id: str = None) -> bool:
+    """Get the stop flag for a specific job."""
+    if job_id is None:
+        return False
+    return _stop_flags.get(job_id, False)
+
+def clear_stop_flag(job_id: str):
+    """Clear the stop flag for a job."""
+    global _stop_flags
+    if job_id in _stop_flags:
+        del _stop_flags[job_id]
+
+def set_review_pause_event(job_id: str, event):
+    """Set the asyncio Event for Phase 2.5 pause for a specific job."""
+    global _review_pause_events
+    _review_pause_events[job_id] = event
+
+def get_review_pause_event(job_id: str = None):
+    """Get the asyncio Event for Phase 2.5 pause for a specific job."""
+    if job_id is None:
+        return None
+    return _review_pause_events.get(job_id)
+
+def clear_review_pause_event(job_id: str):
+    """Clear the pause event for a job."""
+    global _review_pause_events
+    if job_id in _review_pause_events:
+        del _review_pause_events[job_id]
+
+def set_reviewed_script(job_id: str, script: list):
+    """Set the reviewed script for a specific job."""
+    global _reviewed_scripts
+    _reviewed_scripts[job_id] = script
+
+def get_reviewed_script(job_id: str = None):
+    """Get the reviewed script for a specific job."""
+    if job_id is None:
+        return None
+    return _reviewed_scripts.get(job_id)
+
+def clear_reviewed_script(job_id: str):
+    """Clear the reviewed script for a job."""
+    global _reviewed_scripts
+    if job_id in _reviewed_scripts:
+        del _reviewed_scripts[job_id]
 
 # Setup paths
 AGENT_DIR = Path(__file__).parent
@@ -82,7 +126,7 @@ async def phase1_scout(task: str, cdp_url: str) -> dict:
     logger.info("=" * 80)
 
     # Check Chrome before starting browser-use
-    if not check_chrome_debug_running(auto_start=True):
+    if not check_chrome_debug_running(auto_start=True, cdp_url=cdp_url):
         raise RuntimeError("Chrome not available. Cannot proceed with browser-use.")
 
     # Import browser-use
@@ -115,13 +159,35 @@ async def phase1_scout(task: str, cdp_url: str) -> dict:
             f"If the task is now complete, please call the 'done' action immediately."
         )
 
-    # Browser: create a new tab via BrowserProfile
+    # Browser: connect to existing Chrome instance
     browser = Browser(
         cdp_url=cdp_url,
         keep_alive=True,
     )
 
     logger.info(f"Task: {task}")
+    
+    # Start browser connection
+    await browser.start()
+    
+    # Strategy: Instead of creating new tab, navigate existing tab to blank
+    # This ensures browser-use uses the correct tab
+    try:
+        all_pages = await browser.get_pages()
+        if all_pages:
+            # Use the first page and navigate it to blank
+            page = all_pages[0]
+            await page.goto('about:blank')
+            logger.info(f"Navigated existing tab to blank (clean state)")
+        else:
+            # No pages exist, create new one
+            page = await browser.new_page('about:blank')
+            logger.info(f"Created new clean tab for job")
+    except Exception as e:
+        logger.warning(f"Failed to prepare clean tab: {e}")
+        # Fallback: just create new page
+        page = await browser.new_page('about:blank')
+        logger.info(f"Created new tab as fallback")
 
     # Agent prompt
     agent_instructions = (
@@ -583,6 +649,7 @@ async def run_pipeline_v3(
     tts_engine: str = "fpt",
     padding_ms: int = 300,
     enable_review: bool = False,
+    job_id: str = None,
     progress = None,
     progress_callback = None,
 ) -> Path:
@@ -597,6 +664,7 @@ async def run_pipeline_v3(
         tts_voice: Voice name (banmai/leminh/etc).
         tts_engine: TTS engine ("fpt" or "edge").
         padding_ms: Padding added to each narration pause.
+        job_id: Unique job identifier for stop flag tracking.
         progress: Optional progress tracker for UI updates (legacy).
         progress_callback: Optional async callback function(phase: int, message: str) for progress updates.
     """
@@ -608,7 +676,17 @@ async def run_pipeline_v3(
         await progress_callback(1, "Phase 1: Browser-use agent running...")
     if progress:
         progress.update(1, "Phase 1: Browser-use agent running...")
+    
+    if job_id and get_stop_flag(job_id):
+        logger.info(f"Job {job_id}: Stopped before Phase 1")
+        raise SystemExit("Pipeline stopped by user")
+    
     history_data = await phase1_scout(task, cdp_url)
+
+    # Check stop flag after Phase 1
+    if job_id and get_stop_flag(job_id):
+        logger.info(f"Job {job_id}: Stopped after Phase 1")
+        raise SystemExit("Pipeline stopped by user")
 
     # Save history
     history_path = output_dir / "browser_use_history.json"
@@ -621,7 +699,17 @@ async def run_pipeline_v3(
         await progress_callback(2, "Phase 2: Parsing actions...")
     if progress:
         progress.update(2, "Phase 2: Parsing actions...")
+    
+    if job_id and get_stop_flag(job_id):
+        logger.info(f"Job {job_id}: Stopped before Phase 2")
+        raise SystemExit("Pipeline stopped by user")
+    
     config, tts_script = phase2_parser(history_data, video_name)
+
+    # Check stop flag after Phase 2
+    if job_id and get_stop_flag(job_id):
+        logger.info(f"Job {job_id}: Stopped after Phase 2")
+        raise SystemExit("Pipeline stopped by user")
 
     # Save tts_script for debugging
     tts_script_path = output_dir / "tts_script.json"
@@ -640,6 +728,50 @@ async def run_pipeline_v3(
         with open(tts_script_path, "w", encoding="utf-8") as f:
             json.dump(tts_script, f, indent=2, ensure_ascii=False)
         logger.info(f"TTS script updated after review: {len(tts_script)} segments")
+    
+    # Phase 2.5 Web: Pause for web UI review
+    elif not enable_review and tts_script:
+        # Web UI mode - pause and wait for user review
+        if progress_callback:
+            await progress_callback(2.5, "Phase 2.5: Waiting for user to review TTS script...")
+        if progress:
+            progress.update(2.5, "Phase 2.5: Waiting for user to review TTS script...")
+        
+        logger.info("=" * 80)
+        logger.info("Phase 2.5: Web UI Review (waiting for user input)")
+        logger.info("=" * 80)
+        
+        # Get the pause event
+        pause_event = get_review_pause_event(job_id)
+        if pause_event:
+            # Wait for user to submit reviewed script
+            logger.info("Waiting for user to review and submit TTS script...")
+            await pause_event.wait()
+            
+            # Check stop flag after resume
+            if job_id and get_stop_flag(job_id):
+                logger.info(f"Job {job_id}: Stopped during Phase 2.5 review")
+                raise SystemExit("Pipeline stopped by user")
+            
+            # Get reviewed script from global state
+            reviewed = get_reviewed_script(job_id)
+            if reviewed:
+                tts_script = reviewed
+                clear_reviewed_script(job_id)
+                
+                # Update config with reviewed script
+                for i, seg in enumerate(tts_script):
+                    seg["narration_index"] = i
+                _reindex_narrations_in_config(config, video_name, tts_script)
+                
+                # Save updated tts_script
+                with open(tts_script_path, "w", encoding="utf-8") as f:
+                    json.dump(tts_script, f, indent=2, ensure_ascii=False)
+                logger.info(f"TTS script updated after web review: {len(tts_script)} segments")
+            else:
+                logger.warning("No reviewed script received, using original")
+        else:
+            logger.warning("No pause event set, skipping web review")
 
     # Phase 3: Ground-Truth TTS
     segments = []
@@ -648,7 +780,16 @@ async def run_pipeline_v3(
             await progress_callback(3, "Phase 3: Generating TTS audio...")
         if progress:
             progress.update(3, "Phase 3: Generating TTS audio...")
+        
+        if job_id and get_stop_flag(job_id):
+            logger.info(f"Job {job_id}: Stopped before Phase 3")
+            raise SystemExit("Pipeline stopped by user")
+        
         segments = phase3_tts(tts_script, output_dir, voice=tts_voice, engine=tts_engine)
+        
+        if job_id and get_stop_flag(job_id):
+            logger.info(f"Job {job_id}: Stopped after Phase 3")
+            raise SystemExit("Pipeline stopped by user")
 
     # Phase 4: The Injector
     if segments:
@@ -656,6 +797,11 @@ async def run_pipeline_v3(
             await progress_callback(4, "Phase 4: Injecting audio pauses...")
         if progress:
             progress.update(4, "Phase 4: Injecting audio pauses...")
+        
+        if job_id and get_stop_flag(job_id):
+            logger.info(f"Job {job_id}: Stopped before Phase 4")
+            raise SystemExit("Pipeline stopped by user")
+        
         config = phase4_injector(config, video_name, segments, padding_ms)
 
     # Phase 5: The Execution
@@ -663,8 +809,17 @@ async def run_pipeline_v3(
         await progress_callback(5, "Phase 5: Recording video with Webreel...")
     if progress:
         progress.update(5, "Phase 5: Recording video with Webreel...")
+    
+    if job_id and get_stop_flag(job_id):
+        logger.info(f"Job {job_id}: Stopped before Phase 5")
+        raise SystemExit("Pipeline stopped by user")
+    
     config_path = output_dir / "webreel_pipeline.config.json"
     video_path = phase5_execution(config, config_path, video_name, cdp_url)
+    
+    if job_id and get_stop_flag(job_id):
+        logger.info(f"Job {job_id}: Stopped after Phase 5")
+        raise SystemExit("Pipeline stopped by user")
 
     # Phase 6: The Composer
     final_video_path = video_path
@@ -673,6 +828,28 @@ async def run_pipeline_v3(
             await progress_callback(6, "Phase 6: Composing final video...")
         if progress:
             progress.update(6, "Phase 6: Composing final video...")
+        
+        if job_id and get_stop_flag(job_id):
+            logger.info(f"Job {job_id}: Stopped before Phase 6")
+            raise SystemExit("Pipeline stopped by user")
+        
+        final_video_path = phase6_composer(
+            video_path=video_path,
+            config_path=config_path,
+            segments=segments,
+            output_dir=output_dir,
+            video_name=video_name,
+        )
+        
+        if job_id and get_stop_flag(job_id):
+            logger.info(f"Job {job_id}: Stopped after Phase 6")
+            raise SystemExit("Pipeline stopped by user")
+
+    # Clean up job-specific state
+    if job_id:
+        clear_stop_flag(job_id)
+        clear_review_pause_event(job_id)
+        clear_reviewed_script(job_id)
         final_video_path = phase6_composer(
             video_path=video_path,
             config_path=config_path,

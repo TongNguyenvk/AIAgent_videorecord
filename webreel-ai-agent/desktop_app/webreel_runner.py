@@ -1,7 +1,7 @@
 """
 Webreel Runner: Infrastructure for recording videos with Webreel CLI.
 
-Extracted from old run_pipeline_unified_chrome.py for V3 pipeline.
+Desktop app version (self-contained).
 """
 
 import json
@@ -11,11 +11,16 @@ import subprocess
 import time
 from pathlib import Path
 import requests
+import sys
 
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = Path("output")
-# Read CDP URL from environment variable (for Docker), fallback to localhost
+# Desktop app paths
+DESKTOP_APP_DIR = Path(__file__).parent
+OUTPUT_DIR = DESKTOP_APP_DIR / "output"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Read CDP URL from environment variable, fallback to localhost
 CDP_URL = os.getenv("CHROME_CDP_URL", "http://localhost:9222")
 
 
@@ -47,16 +52,12 @@ def check_chrome_debug_running(auto_start: bool = True, cdp_url: str = None) -> 
         logger.info("Attempting to start Chrome with debug port...")
 
         if os.name == "nt":  # Windows
-            # Use new browser_launcher module with Registry lookup
+            # Use browser_launcher module with Registry lookup (local)
             try:
-                # Import browser launcher
-                desktop_app_dir = Path(__file__).resolve().parents[1] / "desktop_app"
-                sys.path.insert(0, str(desktop_app_dir))
-                
                 from browser_launcher import launch_chrome_with_cdp
                 
                 logger.info("Using Registry-based Chrome launcher...")
-                cdp_url = launch_chrome_with_cdp(port=9222, kill_existing=True)
+                cdp_url = launch_chrome_with_cdp(port=9222, kill_existing=False)
                 logger.info(f"Chrome launched via Registry: {cdp_url}")
                 
                 # Verify connection
@@ -72,7 +73,6 @@ def check_chrome_debug_running(auto_start: bool = True, cdp_url: str = None) -> 
                 
             except Exception as start_error:
                 logger.error(f"Failed to start Chrome via Registry: {start_error}")
-                logger.error("Please run start_chrome_debug.bat manually!")
                 return False
         else:
             # Running in Docker/Linux - cannot auto-start Chrome on host
@@ -107,9 +107,10 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str) 
         json.dump(clean_config, f, indent=2, ensure_ascii=False)
     logger.info(f"Config saved: {config_path}")
 
-    # Webreel binary
-    WEBREEL_BIN = Path(__file__).resolve().parent.parent.parent / "packages" / "webreel" / "dist" / "index.js"
-    REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+    # Webreel binary (local copy in desktop_app)
+    DESKTOP_APP_DIR = Path(__file__).resolve().parent
+    WEBREEL_BIN = DESKTOP_APP_DIR / "webreel" / "packages" / "webreel" / "dist" / "index.js"
+    REPO_ROOT = DESKTOP_APP_DIR  # Use desktop_app as working directory
 
     # Env variables
     env = os.environ.copy()

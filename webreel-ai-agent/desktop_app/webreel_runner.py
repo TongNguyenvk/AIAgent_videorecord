@@ -15,6 +15,9 @@ import sys
 
 logger = logging.getLogger(__name__)
 
+# Log which file is being used
+logger.info(f"[WEBREEL_RUNNER] Loaded from: {__file__}")
+
 # Desktop app paths
 DESKTOP_APP_DIR = Path(__file__).parent
 OUTPUT_DIR = DESKTOP_APP_DIR / "output"
@@ -54,22 +57,33 @@ def check_chrome_debug_running(auto_start: bool = True, cdp_url: str = None) -> 
         if os.name == "nt":  # Windows
             # Use browser_launcher module with Registry lookup (local)
             try:
+                # Parse port from check_url
+                import urllib.parse
+                parsed = urllib.parse.urlparse(check_url)
+                target_port = parsed.port or 9222
+                
                 from browser_launcher import launch_chrome_with_cdp
                 
-                logger.info("Using Registry-based Chrome launcher...")
-                cdp_url = launch_chrome_with_cdp(port=9222, kill_existing=False)
-                logger.info(f"Chrome launched via Registry: {cdp_url}")
+                logger.info(f"[DESKTOP_APP] Using Registry-based Chrome launcher on port {target_port}...")
+                logger.info(f"[DESKTOP_APP] Parsed from check_url: {check_url}")
+                cdp_url = launch_chrome_with_cdp(port=target_port, kill_existing=False)
+                logger.info(f"[DESKTOP_APP] Chrome launched via Registry: {cdp_url}")
                 
-                # Verify connection
-                time.sleep(1)
-                try:
-                    response = requests.get(f"{check_url}/json/version", timeout=2)
-                    chrome_info = response.json()
-                    logger.info(f"Chrome ready: {chrome_info.get('Browser', 'Unknown')}")
-                    return True
-                except:
-                    logger.error("Chrome started but CDP not responding")
-                    return False
+                # Verify connection on the CORRECT port (retry up to 5 times)
+                max_retries = 5
+                for attempt in range(max_retries):
+                    time.sleep(2)
+                    try:
+                        response = requests.get(f"{check_url}/json/version", timeout=3)
+                        chrome_info = response.json()
+                        logger.info(f"Chrome ready on port {target_port}: {chrome_info.get('Browser', 'Unknown')}")
+                        return True
+                    except Exception as e:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"Chrome not ready yet (attempt {attempt + 1}/{max_retries}), retrying...")
+                        else:
+                            logger.error(f"Chrome started on port {target_port} but CDP not responding after {max_retries} attempts: {e}")
+                            return False
                 
             except Exception as start_error:
                 logger.error(f"Failed to start Chrome via Registry: {start_error}")

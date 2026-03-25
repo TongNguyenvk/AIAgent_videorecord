@@ -145,7 +145,8 @@ async def phase1_scout(task: str, cdp_url: str) -> dict:
     logger.info("=" * 80)
 
     # Check Chrome before starting browser-use
-    if not check_chrome_debug_running(auto_start=True, cdp_url=cdp_url):
+    # Note: auto_start=False because desktop app already handles Chrome launch
+    if not check_chrome_debug_running(auto_start=False, cdp_url=cdp_url):
         raise RuntimeError("Chrome not available. Cannot proceed with browser-use.")
 
     # Import browser-use (local copy)

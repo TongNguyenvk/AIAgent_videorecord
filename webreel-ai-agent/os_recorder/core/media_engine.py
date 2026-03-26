@@ -153,15 +153,14 @@ def start_screen_recording(
         process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         # Cho FFmpeg khoi dong
         time.sleep(1)
 
         if process.poll() is not None:
-            stderr = process.stderr.read().decode() if process.stderr else ""
-            logger.error(f"FFmpeg exited immediately: {stderr}")
+            logger.error(f"FFmpeg exited immediately")
             return None
 
         logger.info(f"Recording started (PID={process.pid})")

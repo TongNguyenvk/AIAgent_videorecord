@@ -135,10 +135,16 @@ logging.basicConfig(
 )
 
 
+async def _wait_for_cancel(cancel_event):
+    """Async helper: blocks until cancel_event is set."""
+    while not cancel_event.is_set():
+        await asyncio.sleep(0.3)
+
+
 # ---------------------------------------------------------------------------
 # Phase 1: The Scout
 # ---------------------------------------------------------------------------
-async def phase1_scout(task: str, cdp_url: str) -> dict:
+async def phase1_scout(task: str, cdp_url: str, cancel_event=None) -> dict:
     """Run browser-use agent with save_narration tool to gather content."""
     logger.info("=" * 80)
     logger.info("Phase 1: The Scout (browser-use + narration extraction)")
@@ -246,7 +252,28 @@ async def phase1_scout(task: str, cdp_url: str) -> dict:
     )
 
     logger.info("Running agent...")
-    history = await agent.run()
+
+    # Wrap agent.run() so we can cancel it
+    agent_task = asyncio.create_task(agent.run())
+
+    # Monitor cancel_event while agent runs
+    if cancel_event:
+        cancel_monitor = asyncio.create_task(_wait_for_cancel(cancel_event))
+        done, pending = await asyncio.wait(
+            [agent_task, cancel_monitor],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        if cancel_event.is_set():
+            raise asyncio.CancelledError("Phase 1 cancelled by user")
+        history = agent_task.result()
+    else:
+        history = await agent_task
 
     # Build history_data
     history_data = {
@@ -584,6 +611,7 @@ def phase5_execution(
     config_path: Path,
     video_name: str,
     cdp_url: str,
+    cancel_event=None,
 ) -> Path:
     """Record video with Webreel (also emits .trace.json)."""
     logger.info("=" * 80)
@@ -593,8 +621,8 @@ def phase5_execution(
     # Inject CDP URL for Chrome connection
     config["videos"][video_name]["cdpUrl"] = cdp_url
 
-    # Record
-    video_path = record_video_with_webreel(config, config_path, video_name)
+    # Record (pass cancel_event for interruptible subprocess)
+    video_path = record_video_with_webreel(config, config_path, video_name, cancel_event=cancel_event)
 
     return video_path
 
@@ -673,6 +701,7 @@ async def run_pipeline_v3(
     job_id: str = None,
     progress = None,
     progress_callback = None,
+    cancel_event = None,
 ) -> Path:
     """
     V3 Pipeline: 6 phases, no AI review, deterministic.
@@ -698,16 +727,14 @@ async def run_pipeline_v3(
     if progress:
         progress.update(1, "Phase 1: Browser-use agent running...")
     
-    if job_id and get_stop_flag(job_id):
-        logger.info(f"Job {job_id}: Stopped before Phase 1")
-        raise SystemExit("Pipeline stopped by user")
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError("Pipeline cancelled before Phase 1")
     
-    history_data = await phase1_scout(task, cdp_url)
+    history_data = await phase1_scout(task, cdp_url, cancel_event=cancel_event)
 
-    # Check stop flag after Phase 1
-    if job_id and get_stop_flag(job_id):
-        logger.info(f"Job {job_id}: Stopped after Phase 1")
-        raise SystemExit("Pipeline stopped by user")
+    # Check cancel after Phase 1
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError("Pipeline cancelled after Phase 1")
 
     # Save history
     history_path = output_dir / "browser_use_history.json"
@@ -721,16 +748,13 @@ async def run_pipeline_v3(
     if progress:
         progress.update(2, "Phase 2: Parsing actions...")
     
-    if job_id and get_stop_flag(job_id):
-        logger.info(f"Job {job_id}: Stopped before Phase 2")
-        raise SystemExit("Pipeline stopped by user")
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError("Pipeline cancelled before Phase 2")
     
     config, tts_script = phase2_parser(history_data, video_name)
 
-    # Check stop flag after Phase 2
-    if job_id and get_stop_flag(job_id):
-        logger.info(f"Job {job_id}: Stopped after Phase 2")
-        raise SystemExit("Pipeline stopped by user")
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError("Pipeline cancelled after Phase 2")
 
     # Save tts_script for debugging
     tts_script_path = output_dir / "tts_script.json"
@@ -756,9 +780,8 @@ async def run_pipeline_v3(
         logger.info("Phase 2.5: TTS Script Review completed")
         logger.info("=" * 80)
         
-        if job_id and get_stop_flag(job_id):
-            logger.info(f"Job {job_id}: Stopped during Phase 2.5")
-            raise SystemExit("Pipeline stopped by user")
+        if cancel_event and cancel_event.is_set():
+            raise asyncio.CancelledError("Pipeline cancelled during Phase 2.5")
 
     # Phase 3: Ground-Truth TTS
     segments = []
@@ -768,15 +791,15 @@ async def run_pipeline_v3(
         if progress:
             progress.update(3, "Phase 3: Generating TTS audio...")
         
-        if job_id and get_stop_flag(job_id):
-            logger.info(f"Job {job_id}: Stopped before Phase 3")
-            raise SystemExit("Pipeline stopped by user")
+        if cancel_event and cancel_event.is_set():
+            raise asyncio.CancelledError("Pipeline cancelled before Phase 3")
         
-        segments = phase3_tts(tts_script, output_dir, voice=tts_voice, engine=tts_engine)
+        segments = await asyncio.to_thread(
+            phase3_tts, tts_script, output_dir, tts_voice, tts_engine
+        )
         
-        if job_id and get_stop_flag(job_id):
-            logger.info(f"Job {job_id}: Stopped after Phase 3")
-            raise SystemExit("Pipeline stopped by user")
+        if cancel_event and cancel_event.is_set():
+            raise asyncio.CancelledError("Pipeline cancelled after Phase 3")
 
     # Phase 4: The Injector
     if segments:
@@ -785,9 +808,8 @@ async def run_pipeline_v3(
         if progress:
             progress.update(4, "Phase 4: Injecting audio pauses...")
         
-        if job_id and get_stop_flag(job_id):
-            logger.info(f"Job {job_id}: Stopped before Phase 4")
-            raise SystemExit("Pipeline stopped by user")
+        if cancel_event and cancel_event.is_set():
+            raise asyncio.CancelledError("Pipeline cancelled before Phase 4")
         
         config = phase4_injector(config, video_name, segments, padding_ms)
 
@@ -797,16 +819,17 @@ async def run_pipeline_v3(
     if progress:
         progress.update(5, "Phase 5: Recording video with Webreel...")
     
-    if job_id and get_stop_flag(job_id):
-        logger.info(f"Job {job_id}: Stopped before Phase 5")
-        raise SystemExit("Pipeline stopped by user")
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError("Pipeline cancelled before Phase 5")
     
     config_path = output_dir / "webreel_pipeline.config.json"
-    video_path = phase5_execution(config, config_path, video_name, cdp_url)
+    # Run in thread to keep event loop responsive for cancel
+    video_path = await asyncio.to_thread(
+        phase5_execution, config, config_path, video_name, cdp_url, cancel_event
+    )
     
-    if job_id and get_stop_flag(job_id):
-        logger.info(f"Job {job_id}: Stopped after Phase 5")
-        raise SystemExit("Pipeline stopped by user")
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError("Pipeline cancelled after Phase 5")
 
     # Phase 6: The Composer
     final_video_path = video_path
@@ -816,34 +839,26 @@ async def run_pipeline_v3(
         if progress:
             progress.update(6, "Phase 6: Composing final video...")
         
-        if job_id and get_stop_flag(job_id):
-            logger.info(f"Job {job_id}: Stopped before Phase 6")
-            raise SystemExit("Pipeline stopped by user")
+        if cancel_event and cancel_event.is_set():
+            raise asyncio.CancelledError("Pipeline cancelled before Phase 6")
         
-        final_video_path = phase6_composer(
-            video_path=video_path,
-            config_path=config_path,
-            segments=segments,
-            output_dir=output_dir,
-            video_name=video_name,
+        final_video_path = await asyncio.to_thread(
+            phase6_composer,
+            video_path,
+            config_path,
+            segments,
+            output_dir,
+            video_name,
         )
         
-        if job_id and get_stop_flag(job_id):
-            logger.info(f"Job {job_id}: Stopped after Phase 6")
-            raise SystemExit("Pipeline stopped by user")
+        if cancel_event and cancel_event.is_set():
+            raise asyncio.CancelledError("Pipeline cancelled after Phase 6")
 
     # Clean up job-specific state
     if job_id:
         clear_stop_flag(job_id)
         clear_review_pause_event(job_id)
         clear_reviewed_script(job_id)
-        final_video_path = phase6_composer(
-            video_path=video_path,
-            config_path=config_path,
-            segments=segments,
-            output_dir=output_dir,
-            video_name=video_name,
-        )
 
     # Summary
     logger.info("=" * 80)

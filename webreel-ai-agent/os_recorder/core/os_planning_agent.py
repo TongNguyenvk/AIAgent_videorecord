@@ -144,8 +144,8 @@ AVAILABLE UI ELEMENTS (indexed):
 Each element has: [index] ControlType "Name" (centerX, centerY) widthXheight
 
 AVAILABLE ACTIONS:
-- click_element: Click an element by its index. Use "element_index" field.
-- type_text: Type text into the focused element. Use "text" field.
+- click_element: Click an element by its index. Use "element_index" field. (If interacting with MS Excel cells, you MUST also output "excel_range" string field, e.g., "B6").
+- type_text: Type text into the focused element. Use "text" field. (If interacting with MS Excel cells, you MUST also output "excel_range" string field, e.g., "B6").
 - press_key: Press a SAFE key. Allowed: space, enter, tab, escape, right, left, up, down, f5, pageup, pagedown, home, end, 1-9. Use "key" field.
 - scroll: Scroll mouse wheel. Use "amount" field (positive=up, negative=down).
 - wait: Wait for a duration. Use "duration_ms" field.
@@ -167,7 +167,7 @@ RULES:
 2. The "narration" field is for video voiceover. Write in Vietnamese WITH FULL DIACRITICS. Be engaging like a lecturer.
 3. Set "is_done": true when the task is complete. Include a closing narration.
 4. For click_element, ALWAYS use the element_index from the UI ELEMENTS list.
-5. For type_text, the text will be typed into whatever element currently has focus.
+5. For type_text, the text will be typed into whatever element currently has focus. You can output any language including Vietnamese.
 6. NEVER use dangerous keys (delete, backspace, alt, ctrl, win).
 7. If the UI has changed after an action, analyze the NEW screenshot before deciding.
 """
@@ -368,6 +368,31 @@ class OSPlanningAgent:
         """
         from core.os_executor import is_key_safe
         from core.ui_inspector import find_element
+
+        # Xử lý Excel COM trước để cập nhật màn hình cho Planning Phase
+        if "excel_range" in action:
+            excel_range = action["excel_range"]
+            from core.excel_engine import get_excel_engine
+            engine = get_excel_engine()
+            
+            # Thoát chế độ Edit Mode của Excel trước khi thao tác COM nếu đang bị kẹt
+            try:
+                win = app.top_window()
+                win.type_keys("{ESC}")
+            except:
+                pass
+
+            if action_type == "click_element":
+                if engine.silent_select_cell(excel_range):
+                    # Xoá element_index để tránh chạy fallback logic của pywinauto
+                    action.pop("element_index", None)
+                    time.sleep(0.5)
+                    return
+            elif action_type == "type_text":
+                text = action.get("text", "")
+                if engine.inject_text(excel_range, text):
+                    time.sleep(0.5)
+                    return
 
         if action_type == "click_element":
             elem_idx = action.get("element_index", -1)
@@ -634,24 +659,47 @@ class OSPlanningAgent:
 
             # Hành động
             if action_type == "click_element":
-                # Bước 1: Dùng UIA selector thay tọa độ cứng
-                selector = action.get("selector", {})
-                fallback = action.get("fallback_coords", {})
-                replay_plan.append({
-                    "action_type": "click_element",
-                    "target_value": f"Click {selector.get('control_type', '')} \"{selector.get('name', '')}\"",
-                    "selector": selector,
-                    "fallback_coords": fallback,
-                    "move_duration": 0.5,
-                })
+                if "excel_range" in action:
+                    replay_plan.append({
+                        "action_type": "click_element",
+                        "target_value": action["excel_range"],
+                        "selector": {
+                            "engine": "excel_com",
+                            "excel_range": action["excel_range"]
+                        },
+                        "move_duration": 1.0,
+                    })
+                else:
+                    # Bước 1: Dùng UIA selector thay tọa độ cứng
+                    selector = action.get("selector", {})
+                    fallback = action.get("fallback_coords", {})
+                    replay_plan.append({
+                        "action_type": "click_element",
+                        "target_value": f"Click {selector.get('control_type', '')} \"{selector.get('name', '')}\"",
+                        "selector": selector,
+                        "fallback_coords": fallback,
+                        "move_duration": 0.5,
+                    })
 
             elif action_type == "type_text":
-                replay_plan.append({
-                    "action_type": "type_text",
-                    "target_value": "Type text",
-                    "text": action.get("text", ""),
-                    "char_delay": 0.05,
-                })
+                if "excel_range" in action:
+                    replay_plan.append({
+                        "action_type": "type_text",
+                        "target_value": action.get("text", ""),
+                        "text": action.get("text", ""),
+                        "selector": {
+                            "engine": "excel_com",
+                            "excel_range": action["excel_range"]
+                        },
+                        "char_delay": 0.05,
+                    })
+                else:
+                    replay_plan.append({
+                        "action_type": "type_text",
+                        "target_value": "Type text",
+                        "text": action.get("text", ""),
+                        "char_delay": 0.05,
+                    })
 
             elif action_type == "press_key":
                 replay_plan.append({
@@ -688,14 +736,16 @@ class OSPlanningAgent:
         )
         if closing_step:
             closing_text = closing_step.narration.strip()
-            # Kiểm tra trùng lặp với narration cuối
-            last_narration = ""
-            for s in reversed(self.steps):
-                if s.narration.strip() and not s.is_done:
-                    last_narration = s.narration.strip()
-                    break
+            # Lấy tất cả description đã append vào replay_plan
+            added_narrations = [
+                p.get("description", "") 
+                for p in replay_plan 
+                if p.get("action_type") == "pause" and p.get("description", "").startswith("[NARRATION:")
+            ]
+            import re
+            added_texts = [re.sub(r'\[NARRATION:\d+\]\s*', '', d).strip() for d in added_narrations]
             
-            if closing_text != last_narration:
+            if closing_text not in added_texts:
                 replay_plan.append({
                     "action_type": "pause",
                     "target_value": "Closing",

@@ -1,0 +1,18 @@
+# Phase 1: Window Manager + UI
+pygetwindow>=0.0.9
+streamlit>=1.40.0
+
+# Phase 2: Vision + AI Planner
+mss>=9.0.0
+google-genai>=1.0.0
+pydantic>=2.0.0
+
+# Phase 3: OS Executor
+pywinauto>=0.6.8
+pyautogui>=0.9.54
+
+# Phase 4: Media Engine
+edge-tts>=6.1.0
+
+# Utilities
+python-dotenv>=1.0.0

@@ -27,6 +27,11 @@ import ctypes
 from pathlib import Path
 from datetime import datetime
 
+try:
+    ctypes.windll.user32.SetProcessDPIAware()
+except Exception:
+    pass
+
 import pyautogui
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -112,9 +117,9 @@ class ExecutionTrace:
         self.entries = []
         self._start_time = None
 
-    def start(self):
+    def start(self, start_time: float = None):
         """Bat dau ghi trace (reset dong ho)."""
-        self._start_time = time.time()
+        self._start_time = start_time if start_time is not None else time.time()
 
     def _elapsed_ms(self) -> float:
         """Thoi gian da troi tu khi bat dau (ms)."""
@@ -189,6 +194,7 @@ def execute_plan(
     timeout_seconds: int = 120,
     mouse_duration: float = 0.5,
     element_tree=None,
+    recording_start_time: float = None,
 ) -> ExecutionTrace:
     """
     Thuc thi kich ban hanh dong voi mouse + keyboard + execution trace.
@@ -231,8 +237,8 @@ def execute_plan(
         except Exception as e:
             logger.warning(f"Could not get element tree: {e}")
 
-    # Bat dau trace SAU khi focus + load tree
-    trace.start()
+    # Bat dau trace dong bo voi record
+    trace.start(recording_start_time)
 
     for i, action in enumerate(plan):
         # Timeout check
@@ -266,9 +272,30 @@ def execute_plan(
             # Bước 1: Ưu tiên tìm bằng UIA selector (từ plan.json mới)
             selector = action.get("selector", {})
             fallback = action.get("fallback_coords", {})
+            engine_type = selector.get("engine")
             elem_name = selector.get("name") or action.get("name", target_value)
             elem_ctrl = selector.get("control_type") or action.get("control_type")
             elem_aid = selector.get("automation_id") or action.get("automation_id")
+
+            # Xử lý đặc biệt cho Excel (Bypass UIA, dùng trực tiếp COM)
+            if engine_type == "excel_com":
+                cell_address = selector.get("excel_range") or target_value
+                logger.info(f"    -> Dùng COM Engine tìm tọa độ ô: {cell_address}")
+                from core.excel_engine import get_excel_engine
+                engine = get_excel_engine()
+                engine.set_target_pid(target_pid)  # Set PID để tính window offset
+                cx, cy = engine.get_cell_coordinates(cell_address)
+                
+                if cx is not None and cy is not None:
+                    if not dry_run:
+                        pyautogui.moveTo(cx, cy, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
+                        time.sleep(0.1)
+                        pyautogui.click(cx, cy)
+                        time.sleep(0.3)
+                    trace.log_step(i, action_type, f"{step_desc} | COM Excel \"{cell_address}\" @({cx},{cy})", step_start_ms)
+                    continue
+                else:
+                    logger.warning(f"    -> COM lấy tọa độ thất bại cho ô {cell_address}, fallback qua các cách thông thường...")
 
             target_elem = None
 
@@ -396,14 +423,35 @@ def execute_plan(
         elif action_type == "type_text":
             text = action.get("text", target_value)
             char_delay = action.get("char_delay", 0.05)
+            selector = action.get("selector", {})
+            engine_type = selector.get("engine")
+            
+            # Xử lý bơm text qua COM cho Excel
+            if engine_type == "excel_com" and not dry_run:
+                cell_address = selector.get("excel_range")
+                if cell_address:
+                    logger.info(f"  -> Dùng COM Engine bơm text vào ô: {cell_address}")
+                    from core.excel_engine import get_excel_engine
+                    engine = get_excel_engine()
+                    success = engine.inject_text(cell_address, text)
+                    if success:
+                        trace.log_step(i, "type", f"type (COM) \"{text[:40]}\"", step_start_ms)
+                        continue
+
             if not dry_run:
-                # Chuyển keyboard sang English để bypass Telex IME
-                prev_layout = _switch_to_english_keyboard()
-                time.sleep(0.15)
-                pyautogui.write(text, interval=char_delay)
-                time.sleep(0.2)
-                # Khôi phục keyboard layout cũ
-                _restore_keyboard_layout(prev_layout)
+                logger.info(f"  -> PyWinAuto Type: {text[:40]}...")
+                try:
+                    from pywinauto import Application
+                    _app = Application(backend="uia").connect(process=target_pid)
+                    win = _app.top_window()
+                    # type_keys hỗ trợ Unicode, có hiệu ứng gõ từng phím và tự động bypass Telex
+                    win.type_keys(text, with_spaces=True, pause=char_delay)
+                    time.sleep(0.5)
+                except Exception as e:
+                    logger.warning(f"  -> pywinauto type_keys failed: {e}")
+                    import pyperclip
+                    pyperclip.copy(text)
+                    pyautogui.hotkey('ctrl', 'v')
             trace.log_step(i, "type", f"type \"{text[:40]}\"", step_start_ms)
 
         # --- SCROLL ---

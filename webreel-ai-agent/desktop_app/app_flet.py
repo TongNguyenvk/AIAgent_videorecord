@@ -6,6 +6,7 @@ Standalone version with multi-threading and job control
 import flet as ft
 import asyncio
 import logging
+import threading
 from pathlib import Path
 from pipeline import run_pipeline_v3
 from dotenv import load_dotenv
@@ -27,24 +28,7 @@ if env_path.exists():
     load_dotenv(env_path)
 
 
-# CDP Port Management
-CDP_PORT_POOL = list(range(9222, 9232))  # 10 ports: 9222-9231
-used_cdp_ports = set()
 
-
-def get_available_cdp_port():
-    """Get an available CDP port from the pool."""
-    for port in CDP_PORT_POOL:
-        if port not in used_cdp_ports:
-            used_cdp_ports.add(port)
-            return port
-    return None
-
-
-def release_cdp_port(port: int):
-    """Release a CDP port back to the pool."""
-    if port in used_cdp_ports:
-        used_cdp_ports.remove(port)
 
 
 def check_chrome_running(port: int = 9222) -> bool:
@@ -172,11 +156,7 @@ def main(page: ft.Page):
         ],
     )
     
-    auto_start_chrome_checkbox = ft.Checkbox(
-        label="Tự động khởi động Chrome",
-        value=True,
-        fill_color=ft.Colors.BLUE_600,
-    )
+
     
     enable_tts_checkbox = ft.Checkbox(
         label="Bật TTS",
@@ -336,16 +316,19 @@ def main(page: ft.Page):
         page.update()
     
     def stop_job(job_id: int):
-        """Stop a running job."""
+        """Stop a running job immediately."""
         nonlocal current_reviewing_job
         
         if job_id in running_jobs:
             job_data = running_jobs[job_id]
-            if "task_handle" in job_data:
-                job_data["task_handle"].cancel()
             
+            # Signal cancellation first (threading.Event, immediately visible to all threads)
             if "cancel_event" in job_data:
                 job_data["cancel_event"].set()
+            
+            # Cancel the async task
+            if "task_handle" in job_data:
+                job_data["task_handle"].cancel()
             
             # If this job is being reviewed, close review panel and move to next
             if current_reviewing_job == job_id:
@@ -362,10 +345,12 @@ def main(page: ft.Page):
             if "review_event" in job_data:
                 job_data["review_event"].set()
             
-            del running_jobs[job_id]
+            # Mark as cancelled (run_job's except handler will clean up)
+            job_data["status"] = "Dang huy..."
+            job_data["progress"] = 0
             update_jobs_display()
             
-            logger.info(f"Job #{job_id} stopped by user")
+            logger.info(f"Job #{job_id} stop requested")
     
     def load_history_tab():
         """Load video history into history tab."""
@@ -500,7 +485,7 @@ def main(page: ft.Page):
             )
             delete_btn = ft.IconButton(
                 icon=ft.Icons.CLOSE_ROUNDED, icon_size=18,
-                icon_color=ft.Colors.RED_400, tooltip="Xoa segment",
+                icon_color=ft.Colors.RED_400, tooltip="Xóa segment",
                 style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=8)),
                 on_click=_make_delete_handler(idx),
             )
@@ -543,6 +528,7 @@ def main(page: ft.Page):
                     })
             if job_id in running_jobs:
                 running_jobs[job_id]["reviewed_script"] = edited_script
+                running_jobs[job_id]["status"] = "Đang xử lý tiếp video, vui lòng đợi..."
             current_reviewing_job = None
             if job_id in review_queue:
                 review_queue.remove(job_id)
@@ -590,7 +576,7 @@ def main(page: ft.Page):
         info_row = ft.Container(
             content=ft.Row([
                 ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, size=16, color=ft.Colors.BLUE_400),
-                ft.Text("Chinh sua noi dung thuyet minh, sau do nhan Xac nhan de tiep tuc.",
+                ft.Text("Chỉnh sửa nội dung thuyết minh, sau đó nhấn Xác nhận để tiếp tục.",
                         size=12, color=ft.Colors.GREY_600, italic=True),
             ], spacing=8),
             padding=ft.Padding(left=24, right=24, top=12, bottom=8),
@@ -600,7 +586,7 @@ def main(page: ft.Page):
             content=ft.Row(
                 [
                     ft.TextButton(
-                        "Them segment moi",
+                        "Thêm segment mới",
                         icon=ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED,
                         style=ft.ButtonStyle(
                             color=ft.Colors.BLUE_600,
@@ -611,7 +597,7 @@ def main(page: ft.Page):
                     ),
                     ft.Container(expand=True),
                     ft.TextButton(
-                        "Huy bo",
+                        "Hủy bỏ",
                         icon=ft.Icons.UNDO_ROUNDED,
                         style=ft.ButtonStyle(
                             color=ft.Colors.GREY_600,
@@ -621,7 +607,7 @@ def main(page: ft.Page):
                         on_click=on_cancel_click,
                     ),
                     ft.FilledButton(
-                        "Xac nhan",
+                        "Xác nhận",
                         icon=ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED,
                         style=ft.ButtonStyle(
                             bgcolor=ft.Colors.BLUE_600,
@@ -664,61 +650,36 @@ def main(page: ft.Page):
 
         logger.info(f"Job #{job_id}: Review panel shown with {len(tts_script)} segments")
     
-    async def run_job(job_id: int, task: str, video_name: str, cdp_url: str, enable_tts: bool, tts_voice: str, tts_engine: str):
+    async def run_job(job_id: int, task: str, video_name: str, cdp_port: int, enable_tts: bool, tts_voice: str, tts_engine: str):
         """Run pipeline in background thread."""
         nonlocal current_reviewing_job
         
-        cancel_event = asyncio.Event()
+        cancel_event = threading.Event()
         review_event = asyncio.Event()
         
         running_jobs[job_id]["cancel_event"] = cancel_event
         running_jobs[job_id]["review_event"] = review_event
         
-        # Allocate CDP port for this job
-        job_cdp_port = None
-        job_cdp_url = cdp_url  # May be None if auto-start enabled
-        
-        if auto_start_chrome_checkbox.value:
-            # Auto-allocate a free port from pool
-            job_cdp_port = get_available_cdp_port()
-            
-            if job_cdp_port:
-                # Check if Chrome is already running on this port
-                if not check_chrome_running(job_cdp_port):
-                    # Start Chrome on this port
-                    logger.info(f"Job #{job_id}: Starting Chrome on port {job_cdp_port}")
-                    try:
-                        job_cdp_url = launch_chrome_with_cdp(job_cdp_port)
-                        # Wait for Chrome to be fully ready
-                        await asyncio.sleep(3)
-                        # Verify Chrome is actually responding
-                        if not check_chrome_running(job_cdp_port):
-                            logger.error(f"Job #{job_id}: Chrome launched but not responding on port {job_cdp_port}")
-                            release_cdp_port(job_cdp_port)
-                            job_cdp_port = None
-                            job_cdp_url = "http://localhost:9222"  # Fallback to default
-                    except Exception as e:
-                        logger.error(f"Job #{job_id}: Failed to start Chrome: {e}")
-                        release_cdp_port(job_cdp_port)
-                        job_cdp_port = None
-                        job_cdp_url = "http://localhost:9222"  # Fallback to default
-                else:
-                    # Chrome already running on this port, use it
-                    logger.info(f"Job #{job_id}: Using existing Chrome on port {job_cdp_port}")
-                    job_cdp_url = f"http://localhost:{job_cdp_port}"
-            else:
-                logger.error(f"Job #{job_id}: No available CDP ports in pool")
-                # Fallback to default
-                job_cdp_url = "http://localhost:9222"
+        # Check if Chrome is running on selected port, launch if not
+        if not check_chrome_running(cdp_port):
+            logger.info(f"Job #{job_id}: Starting Chrome on port {cdp_port}")
+            try:
+                launch_chrome_with_cdp(cdp_port)
+                await asyncio.sleep(3)
+                if not check_chrome_running(cdp_port):
+                    logger.error(f"Job #{job_id}: Chrome launched but not responding on port {cdp_port}")
+                    raise Exception(f"Chrome not responding on port {cdp_port}")
+            except Exception as e:
+                logger.error(f"Job #{job_id}: Failed to start Chrome: {e}")
+                raise
         else:
-            # Manual mode: use provided cdp_url
-            if not job_cdp_url:
-                job_cdp_url = "http://localhost:9222"  # Fallback to default
+            logger.info(f"Job #{job_id}: Reusing existing Chrome on port {cdp_port}")
         
-        running_jobs[job_id]["cdp_port"] = job_cdp_port
+        job_cdp_url = f"http://localhost:{cdp_port}"
+        running_jobs[job_id]["cdp_port"] = cdp_port
         running_jobs[job_id]["cdp_url"] = job_cdp_url
         
-        logger.info(f"Job #{job_id}: Allocated CDP port {job_cdp_port}, URL: {job_cdp_url}")
+        logger.info(f"Job #{job_id}: Using CDP port {cdp_port}, URL: {job_cdp_url}")
         
         try:
             async def progress_callback(phase: float, message: str, data=None):
@@ -789,6 +750,7 @@ def main(page: ft.Page):
                 padding_ms=300,
                 enable_review=False,
                 progress_callback=progress_callback,
+                cancel_event=cancel_event,
             )
             
             if job_id in running_jobs:
@@ -826,25 +788,14 @@ def main(page: ft.Page):
                     update_jobs_display()
         
         finally:
-            # Release CDP port
-            if job_cdp_port:
-                release_cdp_port(job_cdp_port)
-                logger.info(f"Job #{job_id}: Released CDP port {job_cdp_port}")
+            pass
     
     async def start_pipeline_click(e):
         nonlocal job_counter
         
         task = task_input.value
         video_name = video_name_input.value
-        
-        # CDP URL: only use dropdown port if auto-start is disabled
-        if auto_start_chrome_checkbox.value:
-            # Auto-start mode: will allocate port from pool in run_job
-            cdp_url = None  # Will be set in run_job
-        else:
-            # Manual mode: use port from dropdown
-            cdp_port = cdp_port_dropdown.value
-            cdp_url = f"http://localhost:{cdp_port}"
+        cdp_port = int(cdp_port_dropdown.value)
         
         if not task or not video_name:
             page.snack_bar = ft.SnackBar(
@@ -871,7 +822,7 @@ def main(page: ft.Page):
                 job_id,
                 task,
                 video_name,
-                cdp_url,
+                cdp_port,
                 enable_tts_checkbox.value,
                 tts_voice_dropdown.value,
                 tts_engine_dropdown.value
@@ -903,14 +854,14 @@ def main(page: ft.Page):
                 ft.Text("Cấu hình video", size=16, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
                 task_input,
                 video_name_input,
-                ft.Divider(height=1, color=ft.Colors.GREY_200),
+                ft.Container(expand=True, content=ft.Divider(height=1, color=ft.Colors.GREY_200)),
                 ft.Text("Cài đặt Chrome", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_800),
-                ft.Row([cdp_port_dropdown, auto_start_chrome_checkbox], spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                ft.Divider(height=1, color=ft.Colors.GREY_200),
+                cdp_port_dropdown,
+                ft.Container(expand=True, content=ft.Divider(height=1, color=ft.Colors.GREY_200)),
                 ft.Text("Cài đặt TTS", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_800),
                 enable_tts_checkbox,
                 ft.Row([tts_engine_dropdown, tts_voice_dropdown], spacing=10),
-                ft.Divider(height=1, color=ft.Colors.GREY_200),
+                ft.Container(expand=True),
                 run_button,
             ], spacing=10, scroll=ft.ScrollMode.AUTO, expand=True),
             bgcolor=ft.Colors.WHITE,
@@ -927,20 +878,27 @@ def main(page: ft.Page):
     
     # Main area: Running jobs
     main_area = ft.Container(
-        content=ft.Column([
-            ft.Container(
-                content=ft.Row([
-                    ft.Icon(ft.Icons.WORK_OUTLINE, size=26, color=ft.Colors.BLUE_700),
-                    ft.Text("Jobs đang chạy", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
-                ], spacing=10),
-                padding=ft.Padding.only(bottom=10),
-            ),
-            ft.Container(
-                content=jobs_list,
-                expand=True,
-            ),
-        ], spacing=0, expand=True),
-        padding=ft.Padding(left=16, right=16, top=10, bottom=10),
+        content=ft.Container(
+            content=ft.Column([
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.WORK_OUTLINE, size=26, color=ft.Colors.BLUE_700),
+                        ft.Text("Jobs đang chạy", size=18, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                    ], spacing=10),
+                    padding=ft.Padding.only(bottom=10),
+                ),
+                ft.Container(
+                    content=jobs_list,
+                    expand=True,
+                ),
+            ], spacing=0, expand=True),
+            bgcolor=ft.Colors.WHITE,
+            border_radius=14,
+            padding=20,
+            border=ft.Border.all(1, ft.Colors.GREY_200),
+            expand=True,
+        ),
+        padding=ft.Padding(left=6, right=14, top=10, bottom=10),
         expand=True,
     )
     # Persistent reference to the jobs content for restore after review
@@ -951,7 +909,7 @@ def main(page: ft.Page):
         content=ft.Row([
             sidebar,
             main_area,
-        ], spacing=0, expand=True, vertical_alignment=ft.CrossAxisAlignment.START),
+        ], spacing=0, expand=True, vertical_alignment=ft.CrossAxisAlignment.STRETCH),
         expand=True,
     )
     
@@ -1054,7 +1012,46 @@ def main(page: ft.Page):
         content_container,
     ], spacing=0, expand=True)
     
-    page.add(main_layout)
+    # Wrap in a fixed-size container to maintain pure proportions
+    # Subtracting some height for the window title bar if needed, 1280x720 was original window
+    BASE_WIDTH = 1280
+    BASE_HEIGHT = 680 
+    
+    app_container = ft.Container(
+        content=main_layout,
+        width=BASE_WIDTH,
+        height=BASE_HEIGHT,
+        bgcolor=ft.Colors.GREY_50,
+    )
+    
+    # Center wrapper that expands to fill the real window
+    center_wrapper = ft.Container(
+        content=app_container,
+        alignment=ft.alignment.Alignment(0, 0),
+        expand=True,
+        bgcolor=ft.Colors.GREY_50,
+    )
+
+    def on_resize(e):
+        current_width = page.width
+        current_height = page.height
+        
+        if current_width == 0 or current_height == 0:
+            return
+            
+        # Calculate scale prioritizing keeping the entire UI visible
+        scale = min(current_width / BASE_WIDTH, current_height / BASE_HEIGHT)
+        
+        # Apply scaling via transform
+        app_container.scale = scale
+        app_container.update()
+
+    page.on_resize = on_resize
+    page.add(center_wrapper)
+    
+    # Initial manual trigger
+    on_resize(None)
+    
     switch_tab(0)
 
 

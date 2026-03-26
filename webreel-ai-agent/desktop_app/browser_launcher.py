@@ -90,8 +90,8 @@ def launch_chrome_with_cdp(port=9222, kill_existing=False):
         )
         time.sleep(1.5)  # Chờ Windows giải phóng port
     
-    # Bước 2: Tạo thư mục profile tạm cho AI (không đụng profile user)
-    ai_profile_dir = os.path.join(tempfile.gettempdir(), "AI_Video_Tutor_Profile")
+    # Bước 2: Tạo thư mục profile tạm cho AI (không đụng profile user). Mỗi port một profile riêng.
+    ai_profile_dir = os.path.join(tempfile.gettempdir(), f"AI_Video_Tutor_Profile_{port}")
     
     # Bước 3: Khởi động Chrome với CDP
     cmd = [

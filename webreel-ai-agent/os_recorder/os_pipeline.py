@@ -29,6 +29,7 @@ def run_os_pipeline(
     max_agent_steps: int = 15,
     dry_run: bool = False,
     skip_tts: bool = False,
+    app_executable: str = None,
 ) -> dict:
     """
     Pipeline chính cho OS-level screen recording.
@@ -42,6 +43,7 @@ def run_os_pipeline(
         max_agent_steps: Số bước tối đa cho Agent.
         dry_run: True = không thực thi, chỉ sinh plan + TTS.
         skip_tts: True = bỏ qua TTS (chỉ quay video không tiếng).
+        app_executable: Đường dẫn executable để khởi động lại (Vd: notepad.exe).
 
     Returns:
         Dict chứa đường dẫn các file output.
@@ -217,9 +219,58 @@ def run_os_pipeline(
         logger.info(f"  Total narration audio: {total_narration_ms}ms ({total_narration_ms / 1000:.1f}s)")
 
     # ================================================================
+    # CLEANUP STATE (Restart App if app_executable is provided)
+    # ================================================================
+    current_pid = target_pid
+    # Bypass Cleanup (Tạm không Kill tiến trình) nếu đó là Excel để tránh mất file user
+    if not dry_run and app_executable and "excel" not in app_executable.lower():
+        import psutil
+        import subprocess
+        logger.info(f"\n{'='*60}")
+        logger.info(f"  CLEANUP STATE: Restarting '{app_executable}' for clean recording")
+        logger.info(f"{'='*60}")
+        try:
+            # Kill old process
+            process = psutil.Process(current_pid)
+            process.terminate()
+            process.wait(timeout=3)
+            logger.info(f"  Killed dirty process PID: {current_pid}")
+        except Exception as e:
+            logger.warning(f"  Could not kill old process: {e}")
+
+        # Start new clean process
+        logger.info(f"  Starting new instance of '{app_executable}'...")
+        if "excel" in app_executable.lower():
+            proc = subprocess.Popen("start excel", shell=True)
+            time.sleep(4)
+        else:
+            proc = subprocess.Popen([app_executable])
+            time.sleep(2)  # Wait for window to render completely
+        
+        from core.window_manager import get_visible_windows
+        windows = get_visible_windows()
+        if "notepad" in app_executable.lower():
+            n_win = next((w for w in windows if "notepad" in w["title"].lower()), None)
+            current_pid = n_win["pid"] if n_win else proc.pid
+        elif "excel" in app_executable.lower():
+            e_win = next((w for w in windows if "excel" in w["title"].lower() or "book" in w["title"].lower()), None)
+            current_pid = e_win["pid"] if e_win else proc.pid
+        else:
+            current_pid = proc.pid
+            
+        logger.info(f"  New (Clean) PID for recording: {current_pid}")
+
+    # ================================================================
     # PHASE 3: Record-Replay (quay video tu plan.json)
     # ================================================================
     if not dry_run:
+        print("\n" + "*"*60)
+        print("  [DỪNG CHỜ] AGENT ĐÃ LÊN KỊCH BẢN & SINH AUDIO XONG!")
+        print("  Để hình ảnh khi ghi hình được sạch sẽ và trơn tru,")
+        print("  Xin bạn hãy thủ công Undo (Ctrl+Z) hoặc khôi phục file Excel")
+        print("  về lại chính xác y như trạng thái ban đầu.")
+        print("*"*60)
+        input("  >>> BẤM PHÍM [ENTER] TẠI CỬA SỔ CMD ĐỂ TIẾN HÀNH QUAY... <<<")
         logger.info(f"\n{'='*60}")
         logger.info(f"  PHASE 3: Record-Replay")
         logger.info(f"{'='*60}")
@@ -228,7 +279,7 @@ def run_os_pipeline(
 
         replay_result = replay_plan_with_recording(
             plan_path=str(plan_path),
-            target_pid=target_pid,
+            target_pid=current_pid,
             output_dir=str(output_path),
             video_name=video_name,
         )
@@ -308,27 +359,58 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Chỉ plan + TTS, không quay")
     parser.add_argument("--skip-tts", action="store_true", help="Bỏ qua TTS")
     parser.add_argument("--notepad", action="store_true", help="Tự mở Notepad")
+    parser.add_argument("--excel", action="store_true", help="Tự mở Excel")
     args = parser.parse_args()
 
     pid = args.pid
-    if args.notepad or not pid:
+    app_executable = None
+    if args.excel:
+        from core.window_manager import get_visible_windows
+        import os
+        app_executable = "excel.exe"
+        windows = get_visible_windows()
+        
+        def is_excel(w):
+            t = w["title"].lower()
+            return ("excel" in t or "book" in t) and "visual studio code" not in t and ".py" not in t
+            
+        app_win = next((w for w in windows if is_excel(w)), None)
+        if not app_win:
+            os.system("start excel")
+            time.sleep(4)
+            windows = get_visible_windows()
+            app_win = next((w for w in windows if is_excel(w)), None)
+        if app_win:
+            pid = app_win["pid"]
+            print(f"Sử dụng Excel (PID={pid})")
+        else:
+            print("Lỗi: Không tìm thấy cửa sổ Excel sau khi bật!")
+            sys.exit(1)
+    elif args.notepad or not pid:
         from core.window_manager import get_visible_windows
         import subprocess
 
+        app_executable = "notepad.exe"
         windows = get_visible_windows()
         notepad = next((w for w in windows if "notepad" in w["title"].lower()), None)
         if not notepad:
-            subprocess.Popen(["notepad.exe"])
+            proc = subprocess.Popen([app_executable])
             time.sleep(2)
             windows = get_visible_windows()
-            notepad = next((w for w in windows if "notepad" in w["title"].lower()), None)
-
-        if notepad:
-            pid = notepad["pid"]
-            print(f"Notepad: {notepad['title']} (PID={pid})")
+            notepad_new = next((w for w in windows if "notepad" in w["title"].lower()), None)
+            if notepad_new:
+                pid = notepad_new["pid"]
+                print(f"Khởi động Notepad mới (PID={pid})")
+            else:
+                pid = proc.pid
+                print(f"Khởi động Notepad mới qua Popen (PID={pid})")
         else:
-            print("Không tìm thấy Notepad!")
-            sys.exit(1)
+            pid = notepad["pid"]
+            print(f"Sử dụng Notepad hiện tại: {notepad['title']} (PID={pid})")
+            
+    if not pid:
+        print("Không có PID hợp lệ để chạy pipeline!")
+        sys.exit(1)
 
     result = run_os_pipeline(
         target_pid=pid,
@@ -339,4 +421,5 @@ if __name__ == "__main__":
         max_agent_steps=args.max_steps,
         dry_run=args.dry_run,
         skip_tts=args.skip_tts,
+        app_executable=app_executable,
     )

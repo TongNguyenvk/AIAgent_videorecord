@@ -9,6 +9,7 @@ import logging
 import os
 import subprocess
 import time
+import asyncio
 from pathlib import Path
 import requests
 import sys
@@ -96,10 +97,16 @@ def check_chrome_debug_running(auto_start: bool = True, cdp_url: str = None) -> 
 
 
 
-def record_video_with_webreel(config: dict, config_path: Path, video_name: str) -> Path:
+def record_video_with_webreel(config: dict, config_path: Path, video_name: str, cancel_event=None) -> Path:
     """
     Record video with webreel (calls node CLI).
     Webreel connects via CDP to replay actions with cursor animation.
+
+    Args:
+        config: Webreel config dict.
+        config_path: Path to save config JSON.
+        video_name: Name of the video.
+        cancel_event: Optional asyncio.Event; if set, the subprocess will be killed.
     """
     logger.info("=" * 80)
     logger.info("Phase 5: webreel Record (with cursor)")
@@ -148,26 +155,43 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str) 
     logger.info(f"Running: {cmd}")
 
     start_time = time.time()
-    result = subprocess.run(
+
+    # Use Popen so we can kill the process on cancel
+    proc = subprocess.Popen(
         cmd,
-        capture_output=True,
-        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         shell=True,
         cwd=str(REPO_ROOT),
         env=env,
-        timeout=300,
-        encoding='utf-8',
-        errors='replace'
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
     )
+
+    # Poll loop: check cancel_event every 0.5s
+    cancelled = False
+    while proc.poll() is None:
+        if cancel_event and cancel_event.is_set():
+            logger.info("Cancel requested, killing webreel subprocess...")
+            _kill_process_tree(proc.pid)
+            cancelled = True
+            break
+        time.sleep(0.5)
+
     elapsed = time.time() - start_time
 
-    if result.stdout:
-        logger.info(f"[webreel stdout]:\n{result.stdout}")
-    if result.stderr:
-        logger.info(f"[webreel stderr]:\n{result.stderr}")
+    if cancelled:
+        raise asyncio.CancelledError("Webreel recording cancelled by user")
 
-    if result.returncode != 0:
-        logger.error(f"webreel failed (exit code {result.returncode}) after {elapsed:.1f}s")
+    stdout_data = proc.stdout.read().decode("utf-8", errors="replace") if proc.stdout else ""
+    stderr_data = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+
+    if stdout_data:
+        logger.info(f"[webreel stdout]:\n{stdout_data}")
+    if stderr_data:
+        logger.info(f"[webreel stderr]:\n{stderr_data}")
+
+    if proc.returncode != 0:
+        logger.error(f"webreel failed (exit code {proc.returncode}) after {elapsed:.1f}s")
         dry_cmd = f'node "{WEBREEL_BIN}" record {video_name} -c "{config_path.absolute()}" --dry-run'
         dry = subprocess.run(dry_cmd, capture_output=True, text=True, shell=True, cwd=str(REPO_ROOT), env=env, encoding='utf-8', errors='replace')
         if dry.stdout:
@@ -213,3 +237,20 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str) 
 
     logger.error("No .mp4 output found")
     return config_path.parent / f"{video_name}.mp4"
+
+
+def _kill_process_tree(pid: int):
+    """Kill a process and all its children (Windows-compatible)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                f"taskkill /F /T /PID {pid}",
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        else:
+            import signal
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except Exception as e:
+        logger.warning(f"Failed to kill process tree {pid}: {e}")

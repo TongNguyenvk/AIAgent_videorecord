@@ -322,8 +322,10 @@ def compose_video_from_trace(
     num_inputs = len(mix_inputs)
     # amix with dropout_transition=0 prevents crossfade, normalize=0 prevents volume drop
     filter_parts.append(
-        f"{mix_labels}amix=inputs={num_inputs}:duration=longest:dropout_transition=0:normalize=0,volume=1.5[aout]"
+        f"{mix_labels}amix=inputs={num_inputs}:duration=longest:dropout_transition=0:normalize=0,volume=1.5[amixed]"
     )
+    # Dùng apad kéo dài audio đến vô tận để khớp với video length
+    filter_parts.append("[amixed]apad[aout]")
 
     filter_complex = ";".join(filter_parts)
 
@@ -334,6 +336,7 @@ def compose_video_from_trace(
         "-c:v", "copy",
         "-c:a", "aac",
         "-b:a", "192k",
+        "-shortest",  # Cắt audio vô tận ở ngay điểm video gốc kết thúc
         str(output_path),
     ])
 

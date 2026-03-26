@@ -84,6 +84,7 @@ def record_with_script(
 
     # Buoc 3: Bat dau quay video
     ffmpeg_process = None
+    recording_start_time = time.time()
     if not dry_run:
         logger.info("Step 3: Start recording")
         ffmpeg_process = start_screen_recording(
@@ -115,6 +116,7 @@ def record_with_script(
             timeout_seconds=timeout_seconds,
             mouse_duration=mouse_duration,
             element_tree=element_tree,
+            recording_start_time=recording_start_time,
         )
     except Exception as e:
         logger.error(f"Execution error: {e}")

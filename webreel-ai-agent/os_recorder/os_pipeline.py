@@ -222,8 +222,8 @@ def run_os_pipeline(
     # CLEANUP STATE (Restart App if app_executable is provided)
     # ================================================================
     current_pid = target_pid
-    # Bypass Cleanup (Tạm không Kill tiến trình) nếu đó là Excel để tránh mất file user
-    if not dry_run and app_executable and "excel" not in app_executable.lower():
+    # Bypass Cleanup (Tạm không Kill tiến trình) nếu đó là Excel hoặc PowerPoint để tránh mất file user
+    if not dry_run and app_executable and "excel" not in app_executable.lower() and "powerpnt" not in app_executable.lower():
         import psutil
         import subprocess
         logger.info(f"\n{'='*60}")
@@ -360,6 +360,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip-tts", action="store_true", help="Bỏ qua TTS")
     parser.add_argument("--notepad", action="store_true", help="Tự mở Notepad")
     parser.add_argument("--excel", action="store_true", help="Tự mở Excel")
+    parser.add_argument("--ppt", action="store_true", help="Tự mở PowerPoint")
     args = parser.parse_args()
 
     pid = args.pid
@@ -385,6 +386,29 @@ if __name__ == "__main__":
             print(f"Sử dụng Excel (PID={pid})")
         else:
             print("Lỗi: Không tìm thấy cửa sổ Excel sau khi bật!")
+            sys.exit(1)
+            
+    elif args.ppt:
+        from core.window_manager import get_visible_windows
+        import os
+        app_executable = "powerpnt.exe"
+        windows = get_visible_windows()
+        
+        def is_ppt(w):
+            t = w["title"].lower()
+            return ("powerpoint" in t or "presentation" in t) and "visual studio code" not in t and ".py" not in t
+            
+        app_win = next((w for w in windows if is_ppt(w)), None)
+        if not app_win:
+            os.system("start powerpnt")
+            time.sleep(4)
+            windows = get_visible_windows()
+            app_win = next((w for w in windows if is_ppt(w)), None)
+        if app_win:
+            pid = app_win["pid"]
+            print(f"Sử dụng PowerPoint (PID={pid})")
+        else:
+            print("Lỗi: Không tìm thấy cửa sổ PowerPoint sau khi bật!")
             sys.exit(1)
     elif args.notepad or not pid:
         from core.window_manager import get_visible_windows

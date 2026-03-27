@@ -130,29 +130,75 @@ class ExcelEngine:
                 ws = wb.ActiveSheet
                 range_obj = ws.Range(cell_address)
                 
+                # FIX: Tránh lỗi pixel (DPI scaling, Ribbon height) bằng cách dùng UIA kết hợp COM
+                # Dùng thư viện `uiautomation` để lấy tọa độ vật lý chính xác 100% của ô lưới
+                if self._target_pid:
+                    try:
+                        import uiautomation as auto
+                        # Tìm cửa sổ Excel đang chứa bảng tính này
+                        win = auto.WindowControl(searchDepth=1, ClassName='XLMAIN')
+                        if win.Exists(0, 0):
+                            win_rect = win.BoundingRectangle
+                            cell_ui = win.DataItemControl(Name=cell_address)
+                            
+                            # LẦN 1: Quét xem ô đã nằm hoàn toàn trên màn hình chưa (Tránh Select sớm làm mất tự nhiên)
+                            if cell_ui.Exists(0.1, 0.1):
+                                rect = cell_ui.BoundingRectangle
+                                x_pixel = (rect.left + rect.right) // 2
+                                y_pixel = (rect.top + rect.bottom) // 2
+                                # Nếu tọa độ nằm gọn trong cửa sổ Excel -> Trả về luôn để chuột tự click tự nhiên
+                                if win_rect.left <= x_pixel <= win_rect.right and win_rect.top <= y_pixel <= win_rect.bottom:
+                                    logger.info(f"  [ExcelEngine] Ô {cell_address} đang hiển thị rành rọt, trả về tọa độ (X={x_pixel}, Y={y_pixel})")
+                                    return x_pixel, y_pixel
+                            
+                            # LẦN 2: Nếu ô bị khuất, dùng COM để cuộn màn hình (Scroll) thay vì Select() để không lộ hộp focus
+                            logger.info(f"  [ExcelEngine] Ô {cell_address} bị khuất màn hình, đang tự động cuộn...")
+                            try:
+                                # Tính toán cuộn sao cho ô nằm ở giữa màn hình thay vì sát viền
+                                scroll_row = max(1, range_obj.Row - 4)
+                                scroll_col = max(1, range_obj.Column - 2)
+                                self._excel.ActiveWindow.ScrollRow = scroll_row
+                                self._excel.ActiveWindow.ScrollColumn = scroll_col
+                                time.sleep(0.2)  # Chờ Excel render xong lưới
+                            except Exception as ex_scroll:
+                                logger.debug(f"  [ExcelEngine] COM Scroll qua property thất bại, dùng Select dự phòng: {ex_scroll}")
+                                try:
+                                    range_obj.Select()
+                                    time.sleep(0.2)
+                                except:
+                                    pass
+
+                            # Sau khi cuộn, lấy lại tọa độ
+                            if cell_ui.Exists(1, 1):
+                                rect = cell_ui.BoundingRectangle
+                                x_pixel = (rect.left + rect.right) // 2
+                                y_pixel = (rect.top + rect.bottom) // 2
+                                logger.info(f"  [ExcelEngine] UIAutomation tìm thấy ô {cell_address} sau khi cuộn tại (X={x_pixel}, Y={y_pixel})")
+                                return x_pixel, y_pixel
+                    except Exception as e_uia:
+                        logger.warning(f"  [ExcelEngine] UIA lấy tọa độ thất bại, fallback sang COM: {e_uia}")
+
+                # FALLBACK: Cách cũ tĩnh nếu UIA fail
                 # Lấy tọa độ relative to Excel window (Points)
                 center_x_points = range_obj.Left + (range_obj.Width / 2)
                 center_y_points = range_obj.Top + (range_obj.Height / 2)
                 
-                # Convert Points to Screen Pixels
+                # Convert Points to Screen Pixels (Dễ lệch do DPI/Zoom)
                 x_pixel = self._excel.ActiveWindow.PointsToScreenPixelsX(int(center_x_points))
                 y_pixel = self._excel.ActiveWindow.PointsToScreenPixelsY(int(center_y_points))
                 
-                # FIX: Lấy window position từ PID để cộng offset nếu cần
+                # FIX COM fallback: Lấy window position từ PID để cộng offset nếu cần
                 if self._target_pid:
                     from core.window_manager import get_window_rect_by_pid
                     rect = get_window_rect_by_pid(self._target_pid)
                     if rect:
                         win_left, win_top, _, _ = rect
-                        
-                        # Kiểm tra xem PointsToScreenPixels đã trả về absolute hay relative
-                        # Nếu x_pixel < win_left thì là relative, cần cộng offset
                         if x_pixel < win_left or y_pixel < win_top:
-                            logger.debug(f"  [ExcelEngine] Tọa độ relative, cộng offset ({win_left}, {win_top})")
+                            logger.debug(f"  [ExcelEngine] Tọa độ COM bị relative, cộng offset ({win_left}, {win_top})")
                             x_pixel += win_left
                             y_pixel += win_top
                 
-                logger.info(f"  [ExcelEngine] Tìm thấy ô {cell_address} tại Pixel(X={x_pixel}, Y={y_pixel})")
+                logger.info(f"  [ExcelEngine] COM fallback tìm thấy ô {cell_address} tại Pixel(X={x_pixel}, Y={y_pixel})")
                 return x_pixel, y_pixel
                 
             except Exception as e:
@@ -184,15 +230,27 @@ class ExcelEngine:
                 ws = wb.ActiveSheet
                 range_obj = ws.Range(cell_address)
                 
-                # Biểu diễn gõ từng chữ như người thật để video sinh động hơn
-                # Bằng cách assign liên tục thuộc tính Value
-                # LƯU Ý: Nếu gõ nhanh quá COM có thể bị Reject, nên delay nhẹ
-                range_obj.Value = ""
-                current_value = ""
+                # FIX: Để giữ "chất hướng dẫn" (gõ từng chữ) mà không bị lỗi "#NAME?" hoặc "Exception"
+                # khi nhập công thức. Ta sẽ dùng mẹo gõ bắt đầu bằng dấu ngoặc kép đơn (')
+                # để Excel coi công thức đang gõ dở là văn bản (không phân tích cú pháp).
+                
+                is_formula = text.startswith("=")
+                
+                # Bắt đầu bằng dấu nháy đơn nếu là công thức, hoặc rỗng nếu là text thường
+                current_value = "'" if is_formula else ""
+                
                 for char in text:
                     current_value += char
+                    # Lưu ý: Khi assign qua COM giá trị bắt đầu bằng dấu nháy đơn,
+                    # trên giao diện hiển thị của Excel (trong ô) dấu nháy đơn sẽ bị ẨN đi
+                    # nên video quay ra vẫn nhìn y hệt như đang gõ "=COUNTIF..." rất xịn!
                     range_obj.Value = current_value
                     time.sleep(0.05)
+                
+                # Sau khi "diễn" gõ xong, ta gán lại chính thức bằng thuộc tính .Formula
+                # để Excel bắt đầu tính toán và ra kết quả thật!
+                if is_formula:
+                    range_obj.Formula = text
                     
                 logger.info(f"  [ExcelEngine] Đã bơm text '{text[:15]}...' vào ô {cell_address} bypass Unikey.")
                 return True

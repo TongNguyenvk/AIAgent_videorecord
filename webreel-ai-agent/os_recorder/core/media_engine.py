@@ -122,10 +122,28 @@ def start_screen_recording(
         return None
 
     left, top, width, height = rect
+    
+    # FIX: Chống lỗi FFmpeg "exited immediately" khi cửa sổ bị Maximized có tọa độ âm (vd: -9, -9) 
+    # FFmpeg gdigrab không cho phép chụp vùng ngoài Desktop bounds.
+    import ctypes
+    screen_width = ctypes.windll.user32.GetSystemMetrics(0)
+    screen_height = ctypes.windll.user32.GetSystemMetrics(1)
+    
+    right = min(left + width, screen_width)
+    bottom = min(top + height, screen_height)
+    left = max(0, left)
+    top = max(0, top)
+    width = right - left
+    height = bottom - top
 
     # Dam bao width va height la so chan (yeu cau cua ffmpeg h264)
     width = width - (width % 2)
     height = height - (height % 2)
+    
+    # Chặn lỗi width/height <= 0
+    if width <= 0 or height <= 0:
+        logger.error(f"Invalid recording bounds after clamping: {width}x{height} at ({left},{top})")
+        return None
 
     Path(output_video_path).parent.mkdir(parents=True, exist_ok=True)
 

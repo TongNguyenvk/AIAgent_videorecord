@@ -145,8 +145,10 @@ Each element has: [index] ControlType "Name" (centerX, centerY) widthXheight
 
 AVAILABLE ACTIONS:
 - click_element: Click an element by its index. Use "element_index" field. (If interacting with MS Excel cells, you MUST also output "excel_range" string field, e.g., "B6").
+- drag_mouse: Drag the mouse from one element to another to select/highlight. Use "start_index" and "end_index" fields from the UI ELEMENTS list. (If interacting with MS Excel cells, you MUST also output "start_excel_range" and "end_excel_range" string fields, e.g., "A1" and "C5").
 - type_text: Type text into the focused element. Use "text" field. (If interacting with MS Excel cells, you MUST also output "excel_range" string field, e.g., "B6").
-- press_key: Press a SAFE key. Allowed: space, enter, tab, escape, right, left, up, down, f5, pageup, pagedown, home, end, 1-9. Use "key" field.
+- press_key: Press a SAFE key. Allowed: space, enter, tab, escape, right, left, up, down, f5, pageup, pagedown, home, end, 1-9. Use "key" field. Optional use "repeat" integer field.
+- press_hotkey: Press a combination of keys together. Use "keys" array field. Allowed: shift, ctrl, alt plus all keys from press_key. Optional use "repeat" integer field to press multiple times.
 - scroll: Scroll mouse wheel. Use "amount" field (positive=up, negative=down).
 - wait: Wait for a duration. Use "duration_ms" field.
 - done: Task is complete. No more actions needed.
@@ -168,8 +170,10 @@ RULES:
 3. Set "is_done": true when the task is complete. Include a closing narration.
 4. For click_element, ALWAYS use the element_index from the UI ELEMENTS list.
 5. For type_text, the text will be typed into whatever element currently has focus. You can output any language including Vietnamese.
-6. NEVER use dangerous keys (delete, backspace, alt, ctrl, win).
+6. NEVER use dangerous keys (delete, backspace, win).
 7. If the UI has changed after an action, analyze the NEW screenshot before deciding.
+8. Nếu mày muốn chọn nhiều ô trong Excel hoặc Vẽ một khối Shape trong PowerPoint -> Bắt buộc dùng drag_mouse.
+9. Nếu mày muốn bôi đen một đoạn chữ đang gõ trong TextBox/Word -> Bắt buộc dùng press_hotkey với mảng ["shift", "left"] (hoặc phím mũi tên tương ứng).
 """
 
 
@@ -439,25 +443,62 @@ class OSPlanningAgent:
 
         elif action_type == "press_key":
             key = action.get("key", "")
+            repeat = action.get("repeat", 1)
             if is_key_safe(key):
-                logger.info(f"  -> Silent press: {key}")
-                # Map key names sang pywinauto format
-                key_map = {
-                    "enter": "{ENTER}", "tab": "{TAB}",
-                    "escape": "{ESC}", "space": " ",
-                    "up": "{UP}", "down": "{DOWN}",
-                    "left": "{LEFT}", "right": "{RIGHT}",
-                    "pageup": "{PGUP}", "pagedown": "{PGDN}",
-                    "home": "{HOME}", "end": "{END}",
-                    "f5": "{F5}",
-                }
-                mapped = key_map.get(key.lower(), key)
+                logger.info(f"  -> Silent press: {key} (x{repeat})")
                 try:
-                    app.top_window().type_keys(mapped)
+                    import pyautogui
+                    for _ in range(repeat):
+                        pyautogui.press(key)
+                        import time; time.sleep(0.05)
                 except Exception as e:
                     logger.warning(f"  -> Silent key failed: {e}")
             else:
                 logger.warning(f"  -> Key '{key}' BLOCKED")
+
+        elif action_type == "press_hotkey":
+            keys = action.get("keys", [])
+            repeat = action.get("repeat", 1)
+            safe = all(is_key_safe(k) for k in keys) if keys else False
+            if safe:
+                logger.info(f"  -> Silent hotkey: {keys} (x{repeat})")
+                try:
+                    import pyautogui
+                    for _ in range(repeat):
+                        pyautogui.hotkey(*keys)
+                        import time; time.sleep(0.05)
+                except Exception as e:
+                    logger.warning(f"  -> Silent hotkey failed: {e}")
+            else:
+                logger.warning(f"  -> Hotkey {keys} BLOCKED or INVALID")
+
+        elif action_type == "drag_mouse":
+            start_idx = action.get("start_index", -1)
+            end_idx = action.get("end_index", -1)
+            
+            if 0 <= start_idx < len(indexed_elements) and 0 <= end_idx < len(indexed_elements):
+                s_elem = indexed_elements[start_idx]
+                e_elem = indexed_elements[end_idx]
+                
+                action["start_selector"] = {
+                    "control_type": s_elem.control_type,
+                    "name": s_elem.name,
+                    "automation_id": s_elem.automation_id,
+                    "index": s_elem.index,
+                }
+                action["start_fallback"] = {"x": s_elem.center_x, "y": s_elem.center_y}
+                
+                action["end_selector"] = {
+                    "control_type": e_elem.control_type,
+                    "name": e_elem.name,
+                    "automation_id": e_elem.automation_id,
+                    "index": e_elem.index,
+                }
+                action["end_fallback"] = {"x": e_elem.center_x, "y": e_elem.center_y}
+                
+                logger.info(f"  -> Silent drag from [{start_idx}] to [{end_idx}]")
+            else:
+                logger.warning(f"  -> Drag index out of range!")
 
         elif action_type == "scroll":
             amount = action.get("amount", 0)
@@ -683,13 +724,41 @@ class OSPlanningAgent:
 
             elif action_type == "type_text":
                 if "excel_range" in action:
+                    excel_target = action["excel_range"]
+                    # FIX: Tự động chèn bước di chuột (click_element) nếu Gemini xuất type_text thẳng mặt
+                    # Tránh video thiếu diễn biến chuột.
+                    last_click_target = None
+                    for p in reversed(replay_plan):
+                        if p["action_type"] == "click_element" and p.get("selector", {}).get("engine") == "excel_com":
+                            last_click_target = p["selector"].get("excel_range")
+                            break
+                        if p["action_type"] not in ("pause", "type_text"):
+                            break
+                    
+                    if last_click_target != excel_target:
+                        logger.info(f"  [Auto-Fix] Chèn thêm thao tác di chuột vào {excel_target} trước khi gõ chữ.")
+                        replay_plan.append({
+                            "action_type": "click_element",
+                            "target_value": excel_target,
+                            "selector": {
+                                "engine": "excel_com",
+                                "excel_range": excel_target
+                            },
+                            "move_duration": 1.0,
+                        })
+                        replay_plan.append({
+                            "action_type": "pause",
+                            "target_value": "Focus delay",
+                            "duration_ms": 300,
+                        })
+
                     replay_plan.append({
                         "action_type": "type_text",
                         "target_value": action.get("text", ""),
                         "text": action.get("text", ""),
                         "selector": {
                             "engine": "excel_com",
-                            "excel_range": action["excel_range"]
+                            "excel_range": excel_target
                         },
                         "char_delay": 0.05,
                     })
@@ -705,8 +774,52 @@ class OSPlanningAgent:
                 replay_plan.append({
                     "action_type": "press_key",
                     "target_value": action.get("key", ""),
+                    "repeat": action.get("repeat", 1),
                     "duration_ms": 300,
                 })
+
+            elif action_type == "press_hotkey":
+                keys = action.get("keys", [])
+                replay_plan.append({
+                    "action_type": "press_hotkey",
+                    "target_value": "+".join(keys) if keys else "hotkey",
+                    "keys": keys,
+                    "repeat": action.get("repeat", 1),
+                    "duration_ms": 300,
+                })
+
+            elif action_type == "drag_mouse":
+                start_selector = action.get("start_selector", {})
+                end_selector = action.get("end_selector", {})
+                start_fallback = action.get("start_fallback", {})
+                end_fallback = action.get("end_fallback", {})
+
+                # Check if it's excel range
+                if "start_excel_range" in action and "end_excel_range" in action:
+                    replay_plan.append({
+                        "action_type": "drag_mouse",
+                        "target_value": f"Drag {action['start_excel_range']} to {action['end_excel_range']}",
+                        "start_selector": {
+                            "engine": "excel_com",
+                            "excel_range": action["start_excel_range"]
+                        },
+                        "end_selector": {
+                            "engine": "excel_com",
+                            "excel_range": action["end_excel_range"]
+                        },
+                        "move_duration": 1.0,
+                    })
+                else:
+                    target_str = f"Drag {start_selector.get('control_type', '')} to {end_selector.get('control_type', '')}"
+                    replay_plan.append({
+                        "action_type": "drag_mouse",
+                        "target_value": target_str,
+                        "start_selector": start_selector,
+                        "end_selector": end_selector,
+                        "start_fallback_coords": start_fallback,
+                        "end_fallback_coords": end_fallback,
+                        "move_duration": 1.0,
+                    })
 
             elif action_type == "scroll":
                 replay_plan.append({

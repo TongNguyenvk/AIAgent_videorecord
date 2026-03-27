@@ -88,6 +88,7 @@ SAFE_KEYS = {
     "f5", "escape", "enter", "tab",
     "volumeup", "volumedown", "volumemute",
     "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+    "shift", "ctrl", "alt",
 }
 
 DANGEROUS_KEYS = {
@@ -266,6 +267,87 @@ def execute_plan(
                 pyautogui.press(target_value)
                 time.sleep(0.2)
             trace.log_step(i, action_type, step_desc, step_start_ms)
+
+        # --- PRESS HOTKEY ---
+        elif action_type == "press_hotkey":
+            keys = action.get("keys", [])
+            repeat = action.get("repeat", 1)
+            safe = all(is_key_safe(k) for k in keys) if keys else False
+            if not safe or not keys:
+                trace.log_step(i, action_type, f"BLOCKED or INVALID: {keys}", step_start_ms)
+                continue
+            if not dry_run:
+                for _ in range(repeat):
+                    pyautogui.hotkey(*keys)
+                    time.sleep(0.05)
+                time.sleep(0.2)
+            trace.log_step(i, action_type, f"{step_desc} (x{repeat})", step_start_ms)
+
+        # --- DRAG MOUSE (Bôi đen) ---
+        elif action_type == "drag_mouse":
+            def get_coords(sel, fallback_c):
+                eng = sel.get("engine")
+                if eng == "excel_com":
+                    from core.excel_engine import get_excel_engine
+                    engine = get_excel_engine()
+                    engine.set_target_pid(target_pid)
+                    return engine.get_cell_coordinates(sel.get("excel_range"))
+                
+                cx, cy = None, None
+                aid = sel.get("automation_id")
+                ctrl = sel.get("control_type")
+                name = sel.get("name")
+                if (aid or ctrl) and not dry_run:
+                    from pywinauto import Application
+                    try:
+                        _app = Application(backend="uia").connect(process=target_pid)
+                        win = _app.top_window()
+                        if aid:
+                            criteria = {"auto_id": aid}
+                            if ctrl: criteria["control_type"] = ctrl
+                            wrapper = win.child_window(**criteria)
+                            if wrapper.exists():
+                                rect = wrapper.rectangle()
+                                return (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
+                        if name and ctrl:
+                            wrapper = win.child_window(title=name, control_type=ctrl)
+                            if wrapper.exists():
+                                rect = wrapper.rectangle()
+                                return (rect.left + rect.right) // 2, (rect.top + rect.bottom) // 2
+                    except Exception: pass
+                
+                if element_tree:
+                    from core.ui_inspector import find_element
+                    target_elem = find_element(element_tree, name=name or None, control_type=ctrl, automation_id=aid)
+                    if target_elem:
+                        cx, cy = target_elem.center
+                
+                if cx is None and fallback_c and fallback_c.get("x", 0) > 0:
+                    cx, cy = fallback_c["x"], fallback_c["y"]
+                return cx, cy
+
+            start_sel = action.get("start_selector", {})
+            end_sel = action.get("end_selector", {})
+            start_fall = action.get("start_fallback_coords", {})
+            end_fall = action.get("end_fallback_coords", {})
+            
+            sx, sy = get_coords(start_sel, start_fall)
+            ex, ey = get_coords(end_sel, end_fall)
+            
+            if sx is not None and ex is not None:
+                if not dry_run:
+                    pyautogui.moveTo(sx, sy, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
+                    time.sleep(0.1)
+                    pyautogui.mouseDown(button='left')
+                    time.sleep(0.05)
+                    pyautogui.moveTo(ex, ey, duration=mouse_duration, tween=pyautogui.easeInOutQuad)
+                    time.sleep(0.1)
+                    pyautogui.mouseUp(button='left')
+                    time.sleep(0.2)
+                trace.log_step(i, action_type, f"{step_desc} | @({sx},{sy}) -> @({ex},{ey})", step_start_ms)
+            else:
+                logger.warning("    -> Drag failed: could not resolve start or end coordinates")
+                trace.log_step(i, action_type, "FAILED DRAG", step_start_ms)
 
         # --- CLICK ELEMENT (UIA selector hoặc tìm trong tree) ---
         elif action_type == "click_element":

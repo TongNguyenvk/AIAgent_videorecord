@@ -195,7 +195,7 @@ def execute_plan(
     plan: list[dict],
     target_pid: int,
     dry_run: bool = True,
-    timeout_seconds: int = 120,
+    timeout_seconds: int = 600,
     mouse_duration: float = 0.5,
     element_tree=None,
     recording_start_time: float = None,

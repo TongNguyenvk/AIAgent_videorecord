@@ -946,7 +946,7 @@ def replay_plan_with_recording(
         output_dir=output_dir,
         video_name=video_name,
         dry_run=False,  # Quay that
-        timeout_seconds=120,
+        timeout_seconds=None,  # Auto-calculate from plan duration
         framerate=framerate,
         screenshot_callback=screenshot_callback,
     )

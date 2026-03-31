@@ -168,12 +168,13 @@ RULES:
 1. Return EXACTLY ONE action per response.
 2. The "narration" field is for video voiceover. Write in Vietnamese WITH FULL DIACRITICS. Be engaging like a lecturer.
 3. Set "is_done": true ONLY when the FULL MULTI-PART task is 100% complete. If the task asks for multiple things (e.g., "increase size AND italicize"), you MUST perform one action, and on the next turn perform the other action. Do NOT set is_done=true until ALL requirements of the user task are met! Include a closing narration when actually done.
-4. For click_element on UI buttons, menus, Ribbon tabs, dropdowns (e.g. Font Size, Insert, Bold): ALWAYS use the "element_index" from the UI ELEMENTS list! DO NOT use "target_value" for UI controls!
-5. ONLY use "target_value" when you want to interact with TEXT CONTENT inside the document/spreadsheet workspace itself (e.g. clicking a specific sentence, dragging a cell range, or targeting a text you just typed).
-6. For type_text, the text will be typed into whatever element currently has focus.
-7. NEVER use dangerous keys (delete, backspace, win).
-8. If the UI has changed after an action, analyze the NEW screenshot before deciding.
-9. CRITICAL: When using 'press_hotkey', your 'narration' MUST explicitly read out loud the key combination being pressed so the viewer can learn it. Examples: "ấn tổ hợp phím Control và B", "sử dụng phím tắt Control, Shift và phím lớn hơn".
+4. **IMPORTANT FOR PRESENTATIONS**: When navigating through slides (PowerPoint, PDF, etc.), do NOT mark is_done=true until you see a clear END indicator (e.g., "Thank You" slide, black screen after last slide, or the presentation exits slideshow mode). Keep pressing navigation keys (right, space, pagedown) until you reach the actual end. Do NOT assume you are at the end just because the current slide looks like a conclusion.
+5. For click_element on UI buttons, menus, Ribbon tabs, dropdowns (e.g. Font Size, Insert, Bold): ALWAYS use the "element_index" from the UI ELEMENTS list! DO NOT use "target_value" for UI controls!
+6. ONLY use "target_value" when you want to interact with TEXT CONTENT inside the document/spreadsheet workspace itself (e.g. clicking a specific sentence, dragging a cell range, or targeting a text you just typed).
+7. For type_text, the text will be typed into whatever element currently has focus.
+8. NEVER use dangerous keys (delete, backspace, win).
+9. If the UI has changed after an action, analyze the NEW screenshot before deciding.
+10. CRITICAL: When using 'press_hotkey', your 'narration' MUST explicitly read out loud the key combination being pressed so the viewer can learn it. Examples: "ấn tổ hợp phím Control và B", "sử dụng phím tắt Control, Shift và phím lớn hơn".
 
 RECOMMENDED HOTKEYS (Use these INSTEAD OF click_element):
 - **Word / Excel Formatting**:
@@ -194,6 +195,56 @@ RECOMMENDED HOTKEYS (Use these INSTEAD OF click_element):
   - `["space"]` or `["right"]` or `["enter"]` or `["pagedown"]`: Next Slide / Next Animation
   - `["left"]` or `["pageup"]` or `["backspace"]`: Previous Slide
   - `["esc"]`: End Slide Show
+"""
+
+# PowerPoint-specific prompt (giảng viên giảng bài)
+POWERPOINT_PROMPT = """You are a LECTURER presenting a PowerPoint presentation. You look at a screenshot of the presentation and decide the NEXT action to navigate through slides.
+
+AVAILABLE ACTIONS:
+- press_hotkey: Press a combination of keys. Use "keys" array field (e.g. ["f5"], ["right"]).
+- press_key: Press a single key. Use "key" field (e.g. "right", "space", "escape").
+- done: Presentation is complete.
+
+RESPONSE FORMAT (JSON only):
+{
+  "thought": "Brief analysis of current slide content",
+  "action": {
+    "action_type": "press_key",
+    "key": "right"
+  },
+  "narration": "Vietnamese lecture content explaining THIS SLIDE (3-5 sentences, AS IF you are a professor teaching students, WITH DIACRITICS)",
+  "is_done": false
+}
+
+CRITICAL RULES FOR NARRATION:
+1. **ACT AS A LECTURER**: Your narration should explain the CONTENT of the current slide, NOT the technical action.
+2. **EXPLAIN THE SLIDE**: Read and interpret what you see on the slide. Explain concepts, data, images as if teaching students.
+3. **BE EDUCATIONAL**: Use phrases like "Như các bạn thấy trên slide...", "Điểm quan trọng ở đây là...", "Chúng ta có thể thấy rằng..."
+4. **DO NOT SAY**: "Tôi sẽ nhấn phím...", "Chúng ta chuyển sang slide tiếp theo...", "Sử dụng phím tắt..."
+5. **INSTEAD SAY**: Explain what the slide shows, what students should learn, key takeaways.
+6. Write in Vietnamese WITH FULL DIACRITICS.
+7. 3-5 sentences per slide, engaging and educational.
+
+NAVIGATION RULES:
+1. Start presentation with F5 hotkey: `{"action_type": "press_hotkey", "keys": ["f5"]}`
+2. Navigate to next slide: `{"action_type": "press_key", "key": "right"}` or `{"action_type": "press_key", "key": "space"}`
+3. Set "is_done": true ONLY when you see "End of slide show" black screen or presentation exits slideshow mode.
+4. Do NOT mark done just because a slide looks like conclusion. Keep going until you see the actual end.
+
+EXAMPLE NARRATIONS (GOOD):
+- "Chào mừng các bạn đến với bài giảng hôm nay về giải pháp tài chính cá nhân. Trong bài này, chúng ta sẽ tìm hiểu về các phương pháp quản lý tài chính hiệu quả và xây dựng kế hoạch đầu tư thông minh."
+- "Như các bạn thấy trên slide, đồng cảm là yếu tố then chốt trong giao tiếp. Khi chúng ta thực sự lắng nghe và hiểu cảm xúc của người khác, chúng ta có thể xây dựng mối quan hệ bền vững hơn."
+- "Phân tích cạnh tranh cho thấy thị trường hiện tại có nhiều cơ hội phát triển. Các doanh nghiệp cần tập trung vào điểm mạnh của mình để tạo ra lợi thế cạnh tranh bền vững."
+
+EXAMPLE NARRATIONS (BAD - DO NOT DO THIS):
+- "Tôi sẽ nhấn phím F5 để bắt đầu trình chiếu." ❌
+- "Chúng ta chuyển sang slide tiếp theo bằng phím mũi tên phải." ❌
+- "Tiếp tục bài giảng, sử dụng phím tắt để di chuyển." ❌
+
+POWERPOINT NAVIGATION KEYS:
+- `["f5"]`: Start Slide Show from beginning
+- `["right"]`, `["space"]`, `["pagedown"]`: Next Slide
+- `["escape"]`: End Slide Show
 """
 
 # ---------------------------------------------------------------------------
@@ -238,6 +289,7 @@ class OSPlanningAgent:
         max_steps: int = 15,
         output_dir: str = "workspace",
         model: str = "gemini-3.1-flash-lite-preview",
+        app_type: str = "auto",
     ):
         self.pid = pid
         self.user_task = user_task
@@ -245,10 +297,59 @@ class OSPlanningAgent:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.model = model
+        self.app_type = app_type
 
         self.client = _get_gemini_client()
         self.steps: list[AgentStep] = []
-        self.history: list[dict] = []  # Lich su gui cho Gemini
+        self.history: list[dict] = []
+        self.current_slide_number = 0
+        
+        # Parse slide scripts from user_task if provided
+        self.slide_scripts = self._parse_slide_scripts(user_task)
+        if self.slide_scripts:
+            logger.info(f"  Parsed {len(self.slide_scripts)} slide scripts from user task")
+        
+        # Auto-detect app type
+        if self.app_type == "auto":
+            self.app_type = self._detect_app_type()
+            logger.info(f"  Auto-detected app type: {self.app_type}")
+    
+    def _parse_slide_scripts(self, task: str) -> dict:
+        """
+        Parse slide scripts from user task.
+        Format: "Slide 1: content\nSlide 2: content\n..."
+        Returns: {1: "content", 2: "content", ...}
+        """
+        import re
+        scripts = {}
+        
+        # Pattern: "Slide X:" hoặc "Slide X -" hoặc "Trang X:"
+        pattern = r'(?:Slide|slide|Trang|trang)\s*(\d+)\s*[:\-]\s*(.+?)(?=(?:Slide|slide|Trang|trang)\s*\d+\s*[:\-]|$)'
+        matches = re.findall(pattern, task, re.DOTALL | re.IGNORECASE)
+        
+        for slide_num, content in matches:
+            scripts[int(slide_num)] = content.strip()
+        
+        return scripts
+    
+    def _detect_app_type(self) -> str:
+        """Detect application type based on window title."""
+        try:
+            from pywinauto import Application
+            app = Application(backend="uia").connect(process=self.pid)
+            window_title = app.top_window().window_text()
+            
+            if "PowerPoint" in window_title or ".pptx" in window_title or ".ppt" in window_title:
+                return "powerpoint"
+            elif "Word" in window_title or ".docx" in window_title or ".doc" in window_title:
+                return "word"
+            elif "Excel" in window_title or ".xlsx" in window_title or ".xls" in window_title:
+                return "excel"
+            else:
+                return "general"
+        except Exception as e:
+            logger.warning(f"  Failed to detect app type: {e}, using 'general'")
+            return "general"
 
     def run(self, dry_run: bool = False) -> AgentResult:
         """
@@ -319,18 +420,35 @@ class OSPlanningAgent:
             logger.info(f"  Narration: {agent_step.narration[:60]}")
             logger.info(f"  Done: {agent_step.is_done}")
 
-            # 5. Anti-loop: Nếu agent lặp cùng action 3 lần liên tục -> force skip
+            # 5. Anti-loop: Phát hiện loop thực sự (không áp dụng cho phím điều hướng slide)
             action = agent_step.action
             action_type = action.get("action_type", "")
 
-            if len(self.steps) >= 3:
-                recent_keys = [
-                    (s.action.get("action_type"), s.action.get("target_value"))
-                    for s in self.steps[-3:]
+            # Danh sách phím được phép lặp (dùng cho PowerPoint, PDF viewer, etc.)
+            ALLOWED_REPEAT_KEYS = {
+                "space", "right", "left", "down", "up", 
+                "page_down", "page_up", "pagedown", "pageup",
+                "enter", "return"
+            }
+
+            if len(self.steps) >= 5:  # Tăng từ 3 lên 5 để tránh false positive
+                recent_actions = [
+                    (s.action.get("action_type"), s.action.get("key", "").lower(), s.action.get("target_value"))
+                    for s in self.steps[-5:]
                 ]
-                if len(set(recent_keys)) == 1:
+                
+                # Kiểm tra xem có phải là phím điều hướng được phép lặp không
+                is_navigation_key = False
+                if action_type in ("press_key", "press_hotkey"):
+                    key = action.get("key", "").lower()
+                    keys = action.get("keys", [])
+                    if key in ALLOWED_REPEAT_KEYS or any(k.lower() in ALLOWED_REPEAT_KEYS for k in keys):
+                        is_navigation_key = True
+                
+                # Chỉ phát hiện loop nếu KHÔNG phải phím điều hướng và lặp 5 lần liên tục
+                if not is_navigation_key and len(set(recent_actions)) == 1:
                     logger.warning(
-                        f"  LOOP DETECTED: '{recent_keys[0]}' lap 3 lan -> Tu dong chuyen buoc"
+                        f"  LOOP DETECTED: '{recent_actions[0]}' lap 5 lan -> Tu dong chuyen buoc"
                     )
                     # Giu lai step nay nhung gia lap thanh done de thoat
                     agent_step.is_done = True
@@ -625,6 +743,12 @@ class OSPlanningAgent:
                 history_lines.append(f"Step {s.step_index}: {act} -> {tgt}")
             history_text = "\nPREVIOUS ACTIONS:\n" + "\n".join(history_lines)
 
+        # Select appropriate prompt based on app type
+        if self.app_type == "powerpoint":
+            system_prompt = POWERPOINT_PROMPT
+        else:
+            system_prompt = SYSTEM_PROMPT
+
         # User prompt
         user_prompt = (
             f"USER TASK: {self.user_task}\n\n"
@@ -644,7 +768,7 @@ class OSPlanningAgent:
                         {
                             "role": "user",
                             "parts": [
-                                {"text": SYSTEM_PROMPT + "\n\n" + user_prompt},
+                                {"text": system_prompt + "\n\n" + user_prompt},
                                 {
                                     "inline_data": {
                                         "mime_type": "image/png",
@@ -687,11 +811,32 @@ class OSPlanningAgent:
 
                 data = json.loads(response_text)
 
+                # Override narration with slide script if available (for PowerPoint)
+                narration = data.get("narration", "")
+                if self.app_type == "powerpoint" and self.slide_scripts:
+                    # Increment slide number when navigating forward
+                    action_type = data.get("action", {}).get("action_type", "")
+                    if action_type in ("press_key", "press_hotkey"):
+                        key = data.get("action", {}).get("key", "")
+                        keys = data.get("action", {}).get("keys", [])
+                        # Check if it's a forward navigation key
+                        if key in ("right", "space", "pagedown", "enter") or \
+                           any(k in ("right", "space", "pagedown", "enter") for k in keys):
+                            self.current_slide_number += 1
+                        # F5 starts from slide 1
+                        elif key == "f5" or "f5" in keys:
+                            self.current_slide_number = 1
+                    
+                    # Use script if available for current slide
+                    if self.current_slide_number in self.slide_scripts:
+                        narration = self.slide_scripts[self.current_slide_number]
+                        logger.info(f"  Using slide script for slide {self.current_slide_number}")
+
                 return AgentStep(
                     step_index=step_idx,
                     thought=data.get("thought", ""),
                     action=data.get("action", {"action_type": "done"}),
-                    narration=data.get("narration", ""),
+                    narration=narration,
                     is_done=data.get("is_done", False),
                 )
 
@@ -893,12 +1038,30 @@ class OSPlanningAgent:
         # --- DEDUPLICATE ACTIONS ---
         # Gemini thường sinh ra cùng 1 action ở bước N và bước N+1 (để mark Done: True)
         # Ta cần lọc các action thực thi trùng lặp liên tiếp để tránh click/drag/type 2 lần
+        # NHƯNG: Cho phép phím điều hướng (space, arrow keys) lặp nhiều lần (cho PowerPoint, PDF, etc.)
+        
+        ALLOWED_REPEAT_KEYS = {
+            "space", "right", "left", "down", "up", 
+            "page_down", "page_up", "pagedown", "pageup",
+            "enter", "return"
+        }
+        
         deduped_plan = []
         last_real_action = None
         for a in replay_plan:
             if a["action_type"] not in ("pause", "wait"):
                 if last_real_action and last_real_action["action_type"] == a["action_type"]:
-                    if a.get("target_value") == last_real_action.get("target_value") and \
+                    # Kiểm tra xem có phải phím điều hướng được phép lặp không
+                    is_navigation_key = False
+                    if a["action_type"] in ("press_key", "press_hotkey"):
+                        target_val = a.get("target_value", "").lower()
+                        keys = a.get("keys", [])
+                        if target_val in ALLOWED_REPEAT_KEYS or any(k.lower() in ALLOWED_REPEAT_KEYS for k in keys):
+                            is_navigation_key = True
+                    
+                    # Chỉ deduplicate nếu KHÔNG phải phím điều hướng
+                    if not is_navigation_key and \
+                       a.get("target_value") == last_real_action.get("target_value") and \
                        a.get("text") == last_real_action.get("text"):
                         logger.info(f"  [Auto-Fix] Bỏ qua hành động {a['action_type']} trùng lặp: {a.get('target_value')}")
                         # Xoá luôn pause dư thừa được tạo ra ngay trước hành động trùng này (Narration pause)
@@ -982,7 +1145,7 @@ def replay_plan_with_recording(
         output_dir=output_dir,
         video_name=video_name,
         dry_run=False,  # Quay that
-        timeout_seconds=120,
+        timeout_seconds=None,  # Auto-calculate from plan duration
         framerate=framerate,
     )
 

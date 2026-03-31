@@ -20,13 +20,73 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+def calculate_plan_timeout(plan: list[dict]) -> int:
+    """
+    Calculate timeout dynamically based on plan duration.
+    Returns timeout in seconds with 50% buffer.
+    
+    Tính toán dựa trên:
+    - pause/wait: duration_ms từ action
+    - press_key/press_hotkey: duration_ms hoặc 300ms mặc định
+    - type_text: độ dài text * char_delay
+    - drag_mouse: move_duration
+    - click_element/mouse_click: 500ms mặc định
+    - speak (narration): duration_ms từ action
+    """
+    total_ms = 0
+    for action in plan:
+        action_type = action.get("action_type", "")
+        duration_ms = action.get("duration_ms", 0)
+        
+        if action_type in ("pause", "wait"):
+            # Pause/wait có duration_ms rõ ràng
+            total_ms += duration_ms
+            
+        elif action_type == "speak":
+            # Narration pause - có duration_ms từ TTS
+            total_ms += duration_ms
+            
+        elif action_type in ("press_key", "press_hotkey"):
+            # Phím bấm: dùng duration_ms hoặc 300ms mặc định
+            repeat = action.get("repeat", 1)
+            total_ms += (duration_ms or 300) * repeat
+            
+        elif action_type == "type_text":
+            # Gõ text: tính theo độ dài
+            text = action.get("text", "")
+            char_delay = action.get("char_delay", 0.05)
+            total_ms += len(text) * char_delay * 1000
+            
+        elif action_type == "drag_mouse":
+            # Kéo chuột
+            move_duration = action.get("move_duration", 1.0)
+            total_ms += move_duration * 1000
+            
+        elif action_type in ("click_element", "mouse_click", "mouse_move", "move_to_element"):
+            # Click/move: 500ms mặc định (di chuyển + click + delay)
+            total_ms += 500
+            
+        else:
+            # Action không xác định: 500ms
+            total_ms += 500
+    
+    # Add 50% buffer for safety (network delay, UI lag, etc.)
+    timeout_seconds = int((total_ms / 1000) * 1.5)
+    
+    # Minimum 60s (cho trường hợp plan ngắn), maximum 3600s (1 hour)
+    timeout_seconds = max(60, min(timeout_seconds, 3600))
+    
+    logger.info(f"  Calculated timeout: {timeout_seconds}s (plan duration: {total_ms/1000:.1f}s + 50% buffer)")
+    return timeout_seconds
+
+
 def record_with_script(
     plan: list[dict],
     target_pid: int,
     output_dir: str = "workspace",
     video_name: str = "recording",
     dry_run: bool = True,
-    timeout_seconds: int = 120,
+    timeout_seconds: int = None,  # Auto-calculate if None
     mouse_duration: float = 0.5,
     framerate: int = 30,
     screenshot_callback = None,
@@ -40,7 +100,7 @@ def record_with_script(
         output_dir: Thu muc output.
         video_name: Ten video (khong co .mp4).
         dry_run: True = chi mo phong, khong quay/bam that.
-        timeout_seconds: Timeout tong.
+        timeout_seconds: Timeout tong (None = auto-calculate from plan).
         mouse_duration: Thoi gian di chuyen chuot (giay).
         framerate: FPS cho video.
         screenshot_callback: Optional callback(step_index, step_data) duoc goi sau moi action.
@@ -110,6 +170,13 @@ def record_with_script(
 
     # Buoc 4: Thuc thi kich ban
     logger.info("Step 4: Execute plan")
+    
+    # Auto-calculate timeout if not provided
+    if timeout_seconds is None:
+        timeout_seconds = calculate_plan_timeout(plan)
+    else:
+        logger.info(f"  Using provided timeout: {timeout_seconds}s")
+    
     if screenshot_callback:
         logger.info("  Screenshot callback: ENABLED")
     try:

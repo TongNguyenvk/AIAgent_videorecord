@@ -106,18 +106,41 @@ def main(page: ft.Page):
                                 "source": "web",
                             })
 
-        # Scan os_recorder/workspace/pipeline_output
-        os_output = OS_RECORDER_DIR / "workspace" / "pipeline_output"
+        # Scan os_recorder/workspace/output (new structure)
+        os_output = OS_RECORDER_DIR / "workspace" / "output"
         if os_output.exists():
-            for video_file in os_output.glob("*.mp4"):
-                if "_raw" not in video_file.stem:
-                    videos.append({
-                        "name": video_file.stem,
-                        "path": str(video_file),
-                        "size": video_file.stat().st_size,
-                        "created": video_file.stat().st_mtime,
-                        "source": "desktop",
-                    })
+            for project_dir in os_output.iterdir():
+                if not project_dir.is_dir():
+                    continue
+                
+                # Look for final video
+                video_file = project_dir / f"{project_dir.name}_final.mp4"
+                if not video_file.exists():
+                    # Fallback: any mp4 file
+                    mp4_files = list(project_dir.glob("*.mp4"))
+                    if mp4_files:
+                        video_file = mp4_files[0]
+                    else:
+                        continue
+                
+                video_entry = {
+                    "name": project_dir.name,
+                    "path": str(video_file),
+                    "size": video_file.stat().st_size,
+                    "created": video_file.stat().st_mtime,
+                    "source": "desktop",
+                }
+                
+                # Check for DOCX and PDF
+                docx_file = project_dir / f"{project_dir.name}.docx"
+                pdf_file = project_dir / f"{project_dir.name}.pdf"
+                
+                if docx_file.exists():
+                    video_entry["docx_path"] = str(docx_file)
+                if pdf_file.exists():
+                    video_entry["pdf_path"] = str(pdf_file)
+                
+                videos.append(video_entry)
 
         videos.sort(key=lambda x: x["created"], reverse=True)
         return videos
@@ -203,8 +226,21 @@ def main(page: ft.Page):
             ft.dropdown.Option("notepad", "Notepad"),
         ],
     )
+    
+    # Dual output checkbox for Desktop mode
+    enable_dual_output_checkbox = ft.Checkbox(
+        label="Tạo tài liệu DOCX + PDF",
+        value=True,
+        fill_color=ft.Colors.BLUE_600,
+        tooltip="Tự động tạo tài liệu hướng dẫn (DOCX) và PDF kèm video",
+    )
+    
     desktop_section = ft.Container(
-        content=ft.Column([target_app_section_label, target_app_dropdown], spacing=10),
+        content=ft.Column([
+            target_app_section_label, 
+            target_app_dropdown,
+            enable_dual_output_checkbox
+        ], spacing=10),
         visible=False,
     )
 
@@ -387,39 +423,228 @@ def main(page: ft.Page):
         page.update()
 
     def stop_job(job_id: int):
+        """Stop a job immediately and forcefully."""
         nonlocal current_reviewing_job
 
-        if job_id in running_jobs:
-            job_data = running_jobs[job_id]
+        if job_id not in running_jobs:
+            logger.warning(f"Job #{job_id} not found in running_jobs")
+            return
 
-            if "cancel_event" in job_data:
-                job_data["cancel_event"].set()
+        job_data = running_jobs[job_id]
+        logger.info(f"Job #{job_id} stop requested - forcing immediate cancellation")
 
-            if "task_handle" in job_data:
+        # Step 1: Set cancel flag FIRST (highest priority)
+        if "cancel_event" in job_data:
+            job_data["cancel_event"].set()
+            logger.info(f"  - Cancel event set for job #{job_id}")
+
+        # Step 2: Cancel async task immediately
+        if "task_handle" in job_data:
+            try:
                 job_data["task_handle"].cancel()
+                logger.info(f"  - Async task cancelled for job #{job_id}")
+            except Exception as e:
+                logger.warning(f"  - Failed to cancel task: {e}")
 
-            if current_reviewing_job == job_id:
-                _restore_main_area()
-                current_reviewing_job = None
-                if job_id in review_queue:
-                    review_queue.remove(job_id)
+        # Step 3: Close any open dialogs
+        if current_reviewing_job == job_id:
+            _restore_main_area()
+            current_reviewing_job = None
+            logger.info(f"  - Closed review dialog for job #{job_id}")
 
-            if job_id in review_queue:
-                review_queue.remove(job_id)
+        if job_id in review_queue:
+            review_queue.remove(job_id)
+            logger.info(f"  - Removed from review queue: job #{job_id}")
 
-            # Resume any blocking events
-            if "review_event" in job_data:
-                job_data["review_event"].set()
-            if job_id in os_review_events:
-                os_review_events[job_id].set()
-            if job_id in os_ready_events:
-                os_ready_events[job_id].set()
+        # Step 4: Unblock any waiting events (review, ready-to-record)
+        if "review_event" in job_data:
+            job_data["review_event"].set()
+            logger.info(f"  - Review event unblocked for job #{job_id}")
+        
+        if job_id in os_review_events:
+            os_review_events[job_id].set()
+            logger.info(f"  - OS review event unblocked for job #{job_id}")
+        
+        if job_id in os_ready_events:
+            os_ready_events[job_id].set()
+            logger.info(f"  - OS ready event unblocked for job #{job_id}")
 
-            job_data["status"] = "Đang hủy..."
-            job_data["progress"] = 0
-            update_jobs_display()
+        # Step 5: Kill any child processes (FFmpeg, Webreel, Chrome)
+        try:
+            import psutil
+            if "child_pids" in job_data:
+                for pid in job_data["child_pids"]:
+                    try:
+                        process = psutil.Process(pid)
+                        process.terminate()
+                        logger.info(f"  - Terminated child process PID={pid}")
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+        except ImportError:
+            logger.warning("  - psutil not available, cannot kill child processes")
 
-            logger.info(f"Job #{job_id} stop requested")
+        # Step 6: Update UI immediately
+        job_data["status"] = "Đã hủy"
+        job_data["progress"] = 0
+        job_data["cancelled"] = True
+        update_jobs_display()
+
+        logger.info(f"Job #{job_id} cancellation complete")
+
+    def show_delete_confirmation_dialog(video_data):
+        """Show confirmation dialog before deleting video folder."""
+        try:
+            logger.info(f"Showing delete confirmation for: {video_data.get('name', 'UNKNOWN')}")
+            
+            # Validate required keys
+            if "name" not in video_data or "path" not in video_data:
+                logger.error(f"Missing required keys in video_data: {video_data.keys()}")
+                page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Lỗi: Dữ liệu video không hợp lệ", color=ft.Colors.WHITE),
+                    bgcolor=ft.Colors.RED_600,
+                )
+                page.snack_bar.open = True
+                page.update()
+                return
+            
+            video_name = video_data["name"]
+            video_path = Path(video_data["path"])
+            folder_path = video_path.parent
+            
+            # Calculate folder size
+            total_size = 0
+            file_count = 0
+            try:
+                for file in folder_path.rglob("*"):
+                    if file.is_file():
+                        total_size += file.stat().st_size
+                        file_count += 1
+            except Exception as e:
+                logger.error(f"Error calculating folder size: {e}")
+            
+            size_mb = total_size / (1024 * 1024)
+            
+            def on_confirm_delete(e):
+                logger.info(f"Confirm delete clicked for: {video_name}")
+                try:
+                    # Delete entire folder
+                    shutil.rmtree(folder_path)
+                    logger.info(f"Deleted folder: {folder_path}")
+                    
+                    # Close dialog by setting open=False first
+                    overlay_dialog.open = False
+                    page.update()
+                    
+                    # Then clear overlay
+                    page.overlay.clear()
+                    
+                    # Refresh history
+                    load_history_tab()
+                    
+                    # Show success message
+                    page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"Đã xóa '{video_name}' thành công!", color=ft.Colors.WHITE),
+                        bgcolor=ft.Colors.GREEN_600,
+                    )
+                    page.snack_bar.open = True
+                    page.update()
+                    
+                except Exception as ex:
+                    logger.error(f"Failed to delete folder: {ex}")
+                    import traceback
+                    traceback.print_exc()
+                    
+                    # Close dialog on error
+                    try:
+                        overlay_dialog.open = False
+                        page.update()
+                    except:
+                        pass
+                    page.overlay.clear()
+                    
+                    # Show error message
+                    page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"Lỗi khi xóa: {str(ex)[:50]}", color=ft.Colors.WHITE),
+                        bgcolor=ft.Colors.RED_600,
+                    )
+                    page.snack_bar.open = True
+                    page.update()
+            
+            def on_cancel_delete(e):
+                logger.info(f"Delete cancelled for: {video_name}")
+                overlay_dialog.open = False
+                page.update()
+                page.overlay.clear()
+                page.update()
+            
+            # Build confirmation dialog using overlay
+            overlay_dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Row([
+                    ft.Icon(ft.Icons.WARNING_ROUNDED, size=28, color=ft.Colors.ORANGE_600),
+                    ft.Text("Xác nhận xóa", size=20, weight=ft.FontWeight.BOLD),
+                ], spacing=12),
+                content=ft.Container(
+                    content=ft.Column([
+                        ft.Text(
+                            f"Bạn có chắc chắn muốn xóa video '{video_name}' không?",
+                            size=14,
+                            color=ft.Colors.GREY_800,
+                        ),
+                        ft.Container(height=8),
+                        ft.Container(
+                            content=ft.Column([
+                                ft.Text("Thông tin thư mục:", size=12, weight=ft.FontWeight.BOLD, color=ft.Colors.GREY_700),
+                                ft.Text(f"Đường dẫn: {folder_path}", size=11, color=ft.Colors.GREY_600),
+                                ft.Text(f"Số file: {file_count}", size=11, color=ft.Colors.GREY_600),
+                                ft.Text(f"Kích thước: {size_mb:.1f} MB", size=11, color=ft.Colors.GREY_600),
+                            ], spacing=4),
+                            padding=12,
+                            bgcolor=ft.Colors.ORANGE_50,
+                            border_radius=8,
+                            border=ft.Border.all(1, ft.Colors.ORANGE_200),
+                        ),
+                        ft.Container(height=8),
+                        ft.Row([
+                            ft.Icon(ft.Icons.INFO_OUTLINE, size=16, color=ft.Colors.RED_600),
+                            ft.Text(
+                                "Toàn bộ thư mục sẽ bị xóa vĩnh viễn!",
+                                size=12,
+                                color=ft.Colors.RED_600,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ], spacing=8),
+                    ], spacing=0, tight=True),
+                    width=400,
+                ),
+                actions=[
+                    ft.TextButton(
+                        "Hủy",
+                        on_click=on_cancel_delete,
+                        style=ft.ButtonStyle(
+                            color=ft.Colors.GREY_600,
+                        ),
+                    ),
+                    ft.FilledButton(
+                        "Xóa",
+                        on_click=on_confirm_delete,
+                        style=ft.ButtonStyle(
+                            bgcolor=ft.Colors.RED_600,
+                            color=ft.Colors.WHITE,
+                        ),
+                    ),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+                open=True,
+            )
+            
+            page.overlay.append(overlay_dialog)
+            page.update()
+            
+        except Exception as ex:
+            logger.error(f"Error in show_delete_confirmation_dialog: {ex}")
+            import traceback
+            traceback.print_exc()
 
     def load_history_tab():
         history_list.controls.clear()
@@ -447,6 +672,75 @@ def main(page: ft.Page):
 
                 def make_folder_handler(path):
                     return lambda e: open_video_file(str(Path(path).parent))
+                
+                def make_delete_handler(vid_data):
+                    def handler(e):
+                        logger.info(f"Delete button clicked for: {vid_data.get('name', 'UNKNOWN')}")
+                        try:
+                            show_delete_confirmation_dialog(vid_data)
+                        except Exception as ex:
+                            logger.error(f"Error in delete handler: {ex}")
+                            import traceback
+                            traceback.print_exc()
+                    return handler
+                
+                # Build action buttons
+                action_buttons = [
+                    ft.IconButton(
+                        icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
+                        icon_size=32,
+                        icon_color=ft.Colors.GREEN_600,
+                        tooltip="Phát video",
+                        on_click=make_play_handler(video["path"])
+                    ),
+                ]
+                
+                # Add DOCX button if available
+                if video.get("docx_path"):
+                    action_buttons.append(
+                        ft.IconButton(
+                            icon=ft.Icons.DESCRIPTION,
+                            icon_size=28,
+                            icon_color=ft.Colors.BLUE_700,
+                            tooltip="Mở DOCX",
+                            on_click=make_play_handler(video["docx_path"])
+                        )
+                    )
+                
+                # Add PDF button if available
+                if video.get("pdf_path"):
+                    action_buttons.append(
+                        ft.IconButton(
+                            icon=ft.Icons.PICTURE_AS_PDF,
+                            icon_size=28,
+                            icon_color=ft.Colors.RED_600,
+                            tooltip="Mở PDF",
+                            on_click=make_play_handler(video["pdf_path"])
+                        )
+                    )
+                
+                # Add folder button
+                action_buttons.append(
+                    ft.IconButton(
+                        icon=ft.Icons.FOLDER_OPEN,
+                        icon_size=28,
+                        icon_color=ft.Colors.BLUE_600,
+                        tooltip="Mở thư mục",
+                        on_click=make_folder_handler(video["path"])
+                    )
+                )
+                
+                # Add delete button
+                video_copy = dict(video)
+                delete_button = ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE,
+                    icon_size=28,
+                    icon_color=ft.Colors.RED_600,
+                    tooltip="Xóa video",
+                    on_click=make_delete_handler(video_copy),
+                    disabled=False,
+                )
+                action_buttons.append(delete_button)
 
                 card = ft.Container(
                     content=ft.Row([
@@ -463,20 +757,7 @@ def main(page: ft.Page):
                             ], spacing=8),
                             ft.Text(f"{created_time}  {size_mb:.1f} MB", size=12, color=ft.Colors.GREY_600),
                         ], spacing=4, expand=True),
-                        ft.IconButton(
-                            icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
-                            icon_size=32,
-                            icon_color=ft.Colors.GREEN_600,
-                            tooltip="Phát video",
-                            on_click=make_play_handler(video["path"])
-                        ),
-                        ft.IconButton(
-                            icon=ft.Icons.FOLDER_OPEN,
-                            icon_size=28,
-                            icon_color=ft.Colors.BLUE_600,
-                            tooltip="Mở thư mục",
-                            on_click=make_folder_handler(video["path"])
-                        ),
+                        ft.Row(action_buttons, spacing=4),
                     ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
                     padding=20,
                     bgcolor=ft.Colors.WHITE,
@@ -768,6 +1049,201 @@ def main(page: ft.Page):
         page.update()
 
     # ================================================================
+    # Completion Dialog - Show when job finishes
+    # ================================================================
+    def show_completion_dialog(job_id: int, video_name: str, video_path: str, document_path: str = None, pdf_path: str = None, mode: str = "web"):
+        """Show completion dialog with options to view results or go to history."""
+        
+        def on_view_video(e):
+            open_video_file(video_path)
+            close_dialog(e)
+        
+        def on_view_docx(e):
+            if document_path:
+                open_video_file(document_path)
+            close_dialog(e)
+        
+        def on_view_pdf(e):
+            if pdf_path:
+                open_video_file(pdf_path)
+            close_dialog(e)
+        
+        def on_open_folder(e):
+            open_video_file(str(Path(video_path).parent))
+            close_dialog(e)
+        
+        def on_go_to_history(e):
+            switch_tab(1)
+            close_dialog(e)
+        
+        def close_dialog(e):
+            # Remove job from running_jobs
+            if job_id in running_jobs:
+                del running_jobs[job_id]
+            _restore_main_area()
+        
+        # Build action buttons
+        action_buttons = [
+            ft.FilledButton(
+                "Xem video",
+                icon=ft.Icons.PLAY_CIRCLE_OUTLINE,
+                style=ft.ButtonStyle(
+                    bgcolor=ft.Colors.GREEN_600,
+                    color=ft.Colors.WHITE,
+                    shape=ft.RoundedRectangleBorder(radius=10),
+                    padding=ft.Padding(left=18, right=22, top=12, bottom=12),
+                ),
+                on_click=on_view_video,
+            ),
+        ]
+        
+        if document_path:
+            action_buttons.append(
+                ft.OutlinedButton(
+                    "Xem DOCX",
+                    icon=ft.Icons.DESCRIPTION,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.BLUE_700,
+                        shape=ft.RoundedRectangleBorder(radius=10),
+                        padding=ft.Padding(left=18, right=22, top=12, bottom=12),
+                    ),
+                    on_click=on_view_docx,
+                )
+            )
+        
+        if pdf_path:
+            action_buttons.append(
+                ft.OutlinedButton(
+                    "Xem PDF",
+                    icon=ft.Icons.PICTURE_AS_PDF,
+                    style=ft.ButtonStyle(
+                        color=ft.Colors.RED_600,
+                        shape=ft.RoundedRectangleBorder(radius=10),
+                        padding=ft.Padding(left=18, right=22, top=12, bottom=12),
+                    ),
+                    on_click=on_view_pdf,
+                )
+            )
+        
+        action_buttons.append(
+            ft.OutlinedButton(
+                "Mở thư mục",
+                icon=ft.Icons.FOLDER_OPEN,
+                style=ft.ButtonStyle(
+                    color=ft.Colors.BLUE_600,
+                    shape=ft.RoundedRectangleBorder(radius=10),
+                    padding=ft.Padding(left=18, right=22, top=12, bottom=12),
+                ),
+                on_click=on_open_folder,
+            )
+        )
+        
+        # Build completion panel
+        header = ft.Container(
+            content=ft.Row([
+                ft.Container(
+                    content=ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=28, color=ft.Colors.WHITE),
+                    width=50, height=50, border_radius=25, bgcolor=ft.Colors.GREEN_600,
+                    alignment=ft.alignment.Alignment(0, 0),
+                ),
+                ft.Column([
+                    ft.Text("Hoàn thành!", size=22, weight=ft.FontWeight.W_700, color=ft.Colors.GREEN_800),
+                    ft.Text(f"Video '{video_name}' đã được tạo thành công", size=14, color=ft.Colors.GREY_700),
+                ], spacing=4),
+            ], spacing=16, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.Padding(left=24, right=24, top=24, bottom=20),
+            bgcolor=ft.Colors.with_opacity(0.08, ft.Colors.GREEN_600),
+            border_radius=ft.BorderRadius(top_left=16, top_right=16, bottom_left=0, bottom_right=0),
+        )
+        
+        # File info
+        file_size = Path(video_path).stat().st_size / (1024 * 1024)
+        file_info_items = [
+            ft.Row([
+                ft.Icon(ft.Icons.VIDEO_FILE, size=20, color=ft.Colors.BLUE_600),
+                ft.Text(f"Video: {file_size:.1f} MB", size=13, color=ft.Colors.GREY_700),
+            ], spacing=8),
+        ]
+        
+        if document_path and Path(document_path).exists():
+            doc_size = Path(document_path).stat().st_size / 1024
+            file_info_items.append(
+                ft.Row([
+                    ft.Icon(ft.Icons.DESCRIPTION, size=20, color=ft.Colors.BLUE_700),
+                    ft.Text(f"DOCX: {doc_size:.1f} KB", size=13, color=ft.Colors.GREY_700),
+                ], spacing=8)
+            )
+        
+        if pdf_path and Path(pdf_path).exists():
+            pdf_size = Path(pdf_path).stat().st_size / 1024
+            file_info_items.append(
+                ft.Row([
+                    ft.Icon(ft.Icons.PICTURE_AS_PDF, size=20, color=ft.Colors.RED_600),
+                    ft.Text(f"PDF: {pdf_size:.1f} KB", size=13, color=ft.Colors.GREY_700),
+                ], spacing=8)
+            )
+        
+        info_section = ft.Container(
+            content=ft.Column([
+                ft.Text("Các file đã tạo:", size=13, weight=ft.FontWeight.BOLD, color=ft.Colors.BLUE_900),
+                ft.Column(file_info_items, spacing=8),
+            ], spacing=12),
+            padding=ft.Padding(left=24, right=24, top=16, bottom=16),
+        )
+        
+        # Action buttons section
+        action_section = ft.Container(
+            content=ft.Column([
+                ft.Row(action_buttons, spacing=10, wrap=True),
+                ft.Divider(height=1, color=ft.Colors.GREY_300),
+                ft.Row([
+                    ft.TextButton(
+                        "Đóng",
+                        icon=ft.Icons.CLOSE,
+                        style=ft.ButtonStyle(
+                            color=ft.Colors.GREY_600,
+                            shape=ft.RoundedRectangleBorder(radius=10),
+                        ),
+                        on_click=close_dialog,
+                    ),
+                    ft.Container(expand=True),
+                    ft.FilledButton(
+                        "Xem lịch sử",
+                        icon=ft.Icons.HISTORY,
+                        style=ft.ButtonStyle(
+                            bgcolor=ft.Colors.BLUE_600,
+                            color=ft.Colors.WHITE,
+                            shape=ft.RoundedRectangleBorder(radius=10),
+                            padding=ft.Padding(left=18, right=22, top=12, bottom=12),
+                        ),
+                        on_click=on_go_to_history,
+                    ),
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ], spacing=16),
+            padding=ft.Padding(left=24, right=24, top=16, bottom=20),
+            bgcolor=ft.Colors.with_opacity(0.03, ft.Colors.GREY_600),
+            border_radius=ft.BorderRadius(top_left=0, top_right=0, bottom_left=16, bottom_right=16),
+        )
+        
+        completion_panel = ft.Container(
+            content=ft.Column([header, info_section, action_section], spacing=0),
+            bgcolor=ft.Colors.WHITE,
+            border_radius=16,
+            border=ft.Border.all(2, ft.Colors.GREEN_300),
+            width=600,
+        )
+        
+        # Center the panel
+        completion_content = ft.Container(
+            content=completion_panel,
+            alignment=ft.alignment.Alignment(0, 0),
+            expand=True,
+        )
+        
+        main_area.content = completion_content
+        page.update()
+
+    # ================================================================
     # Web Job Runner (from desktop_app pipeline.py)
     # ================================================================
     async def run_web_job(job_id: int, task: str, video_name: str, cdp_port: int, enable_tts: bool, tts_voice: str, tts_engine: str):
@@ -801,33 +1277,64 @@ def main(page: ft.Page):
             from pipeline import run_pipeline_v3
 
             async def progress_callback(phase, message, data=None):
+                # Check cancellation at every callback
                 if cancel_event.is_set():
+                    logger.info(f"Job #{job_id} cancelled at phase {phase}")
                     raise asyncio.CancelledError("Job cancelled by user")
+
+                # Phase messages in Vietnamese
+                phase_messages = {
+                    1: "Giai đoạn 1: Trình duyệt đang thực hiện nhiệm vụ...",
+                    2: "Giai đoạn 2: Đang phân tích và tạo kịch bản...",
+                    2.5: "Giai đoạn 2.5: Chờ xem lại lời thoại...",
+                    3: "Giai đoạn 3: Đang tạo giọng đọc TTS...",
+                    4: "Giai đoạn 4: Đang điều chỉnh thời lượng âm thanh...",
+                    5: "Giai đoạn 5: Đang quay video...",
+                    6: "Giai đoạn 6: Đang ghép âm thanh vào video...",
+                }
 
                 if phase == 2.5 and data:
                     if job_id not in review_queue:
                         review_queue.append(job_id)
                     running_jobs[job_id]["tts_script"] = data
-                    running_jobs[job_id]["status"] = "Dang cho review..."
+                    running_jobs[job_id]["status"] = "Đang chờ xem lại lời thoại..."
                     running_jobs[job_id]["progress"] = phase / 6
                     update_jobs_display()
 
+                    # Wait for turn in queue with frequent cancel checks
                     while current_reviewing_job is not None and current_reviewing_job != job_id:
                         if cancel_event.is_set():
+                            logger.info(f"Job #{job_id} cancelled while waiting for review")
                             raise asyncio.CancelledError("Job cancelled by user")
-                        await asyncio.sleep(0.5)
+                        await asyncio.sleep(0.2)  # Check more frequently
 
-                    running_jobs[job_id]["status"] = "Dang review..."
+                    # Check again before showing dialog
+                    if cancel_event.is_set():
+                        raise asyncio.CancelledError("Job cancelled before review dialog")
+
+                    running_jobs[job_id]["status"] = "Đang xem lại lời thoại..."
                     update_jobs_display()
                     show_review_dialog(job_id, data, mode="web")
-                    await review_event.wait()
+                    
+                    # Wait for review with cancel checks
+                    while not review_event.is_set():
+                        if cancel_event.is_set():
+                            logger.info(f"Job #{job_id} cancelled during review")
+                            raise asyncio.CancelledError("Job cancelled during review")
+                        try:
+                            await asyncio.wait_for(review_event.wait(), timeout=0.2)
+                            break
+                        except asyncio.TimeoutError:
+                            continue
+                    
                     reviewed_script = running_jobs[job_id].get("reviewed_script")
                     review_event.clear()
                     return reviewed_script
 
                 if job_id in running_jobs:
                     running_jobs[job_id]["progress"] = phase / 6
-                    running_jobs[job_id]["status"] = message
+                    # Use Vietnamese message if available, otherwise use provided message
+                    running_jobs[job_id]["status"] = phase_messages.get(phase, message)
                     update_jobs_display()
                 return None
 
@@ -840,27 +1347,47 @@ def main(page: ft.Page):
 
             if job_id in running_jobs:
                 if video_path and Path(video_path).exists():
-                    running_jobs[job_id]["status"] = "Hoan thanh!"
+                    running_jobs[job_id]["status"] = "Hoàn thành!"
                     running_jobs[job_id]["progress"] = 1.0
                     running_jobs[job_id]["video_path"] = str(video_path)
+                    update_jobs_display()
+                    
+                    # Show completion dialog
+                    await asyncio.sleep(0.5)
+                    show_completion_dialog(
+                        job_id=job_id,
+                        video_name=video_name,
+                        video_path=str(video_path),
+                        mode="web"
+                    )
                 else:
-                    running_jobs[job_id]["status"] = "Loi: Khong tao duoc video"
+                    running_jobs[job_id]["status"] = "Lỗi: Không tạo được video"
                     running_jobs[job_id]["progress"] = 0
+                    update_jobs_display()
+                    await asyncio.sleep(5)
+                    if job_id in running_jobs:
+                        del running_jobs[job_id]
+                        update_jobs_display()
+
+        except asyncio.CancelledError:
+            logger.info(f"Job #{job_id} (Web) cancelled successfully")
+            if job_id in running_jobs:
+                running_jobs[job_id]["status"] = "Đã hủy"
+                running_jobs[job_id]["progress"] = 0
                 update_jobs_display()
-                await asyncio.sleep(3)
+                
+                # Show cancelled status briefly
+                await asyncio.sleep(1.5)
+                
+                # Remove job from list
                 if job_id in running_jobs:
                     del running_jobs[job_id]
                     update_jobs_display()
-
-        except asyncio.CancelledError:
-            logger.info(f"Job #{job_id} cancelled")
-            if job_id in running_jobs:
-                del running_jobs[job_id]
-                update_jobs_display()
+                    logger.info(f"Job #{job_id} removed from running jobs")
         except Exception as ex:
             logger.exception(f"Job #{job_id} failed")
             if job_id in running_jobs:
-                running_jobs[job_id]["status"] = f"Loi: {str(ex)[:50]}"
+                running_jobs[job_id]["status"] = f"Lỗi: {str(ex)[:50]}"
                 running_jobs[job_id]["progress"] = 0
                 update_jobs_display()
                 await asyncio.sleep(5)
@@ -887,7 +1414,7 @@ def main(page: ft.Page):
 
         try:
             # Find target application PID
-            running_jobs[job_id]["status"] = "Dang tim ung dung..."
+            running_jobs[job_id]["status"] = "Đang tìm ứng dụng..."
             running_jobs[job_id]["progress"] = 0.05
             update_jobs_display()
 
@@ -905,7 +1432,7 @@ def main(page: ft.Page):
             app_win = next((w for w in windows if app_info["filter"](w["title"].lower())), None)
 
             if not app_win:
-                running_jobs[job_id]["status"] = f"Dang khoi dong {target_app}..."
+                running_jobs[job_id]["status"] = f"Đang khởi động {target_app}..."
                 update_jobs_display()
                 subprocess.Popen(app_info["start_cmd"], shell=True)
                 await asyncio.sleep(4)
@@ -913,12 +1440,12 @@ def main(page: ft.Page):
                 app_win = next((w for w in windows if app_info["filter"](w["title"].lower())), None)
 
             if not app_win:
-                raise Exception(f"Khong tim thay cua so {target_app}")
+                raise Exception(f"Không tìm thấy cửa sổ {target_app}")
 
             pid = app_win["pid"]
             logger.info(f"Job #{job_id}: Found {target_app} PID={pid}")
 
-            running_jobs[job_id]["status"] = "Phase 1: Agent dang do duong..."
+            running_jobs[job_id]["status"] = "Giai đoạn 1: AI đang lên kịch bản..."
             running_jobs[job_id]["progress"] = 0.1
             update_jobs_display()
 
@@ -929,13 +1456,30 @@ def main(page: ft.Page):
             def os_progress_callback(phase, message, narrations=None):
                 nonlocal phase_2_5_shown, phase_3_shown
 
+                # Check cancellation at every callback
                 if cancel_event.is_set():
-                    return
+                    logger.info(f"Job #{job_id} cancelled at phase {phase}")
+                    return  # Return immediately to stop pipeline
+
+                # Phase messages in Vietnamese for Desktop mode
+                phase_messages = {
+                    1.0: "Giai đoạn 1: AI đang lên kịch bản...",
+                    2.0: "Giai đoạn 2: Đang tạo giọng đọc TTS...",
+                    2.5: "Giai đoạn 2.5: Chờ xem lại lời thoại...",
+                    3.0: "Giai đoạn 3: Sẵn sàng quay video...",
+                    4.0: "Giai đoạn 4: Đang ghép âm thanh vào video...",
+                    5.0: "Giai đoạn 5: Đang tạo tài liệu DOCX và PDF...",
+                }
 
                 if phase == 2.5 and narrations and not phase_2_5_shown:
                     phase_2_5_shown = True
+                    # Check cancel before showing dialog
+                    if cancel_event.is_set():
+                        logger.info(f"Job #{job_id} cancelled before review dialog")
+                        return
+                    
                     # Schedule UI review dialog on main thread
-                    running_jobs[job_id]["status"] = "Phase 2.5: Cho review loi thoai..."
+                    running_jobs[job_id]["status"] = "Giai đoạn 2.5: Chờ xem lại lời thoại..."
                     running_jobs[job_id]["progress"] = 0.3
                     # Must schedule on main event loop
                     page.run_thread(lambda: show_review_dialog(job_id, narrations, mode="desktop"))
@@ -943,7 +1487,12 @@ def main(page: ft.Page):
 
                 if phase == 3.0 and not phase_3_shown:
                     phase_3_shown = True
-                    running_jobs[job_id]["status"] = "San sang quay video..."
+                    # Check cancel before showing dialog
+                    if cancel_event.is_set():
+                        logger.info(f"Job #{job_id} cancelled before ready dialog")
+                        return
+                    
+                    running_jobs[job_id]["status"] = "Sẵn sàng quay video..."
                     running_jobs[job_id]["progress"] = 0.5
                     # Show ready-to-record dialog
                     page.run_thread(lambda: show_ready_to_record_dialog(job_id))
@@ -952,23 +1501,27 @@ def main(page: ft.Page):
                 # Generic progress update
                 if job_id in running_jobs:
                     running_jobs[job_id]["progress"] = min(phase / 6.0, 0.95)
-                    running_jobs[job_id]["status"] = message
+                    # Use Vietnamese message if available
+                    running_jobs[job_id]["status"] = phase_messages.get(phase, message)
                     try:
                         page.update()
                     except Exception:
                         pass
 
             # Run OS pipeline in background thread
-            from os_pipeline_v2 import run_os_pipeline
+            from os_pipeline_main import run_os_pipeline_v3_dual
+            
+            # Get dual output setting
+            enable_dual = enable_dual_output_checkbox.value
 
             pipeline_result = await asyncio.to_thread(
-                run_os_pipeline,
+                run_os_pipeline_v3_dual,
                 target_pid=pid,
                 task_description=task,
-                output_dir=str(OS_RECORDER_DIR / "workspace" / "pipeline_output"),
+                output_dir=str(OS_RECORDER_DIR / "workspace" / "output"),
                 video_name=video_name,
                 voice=tts_voice if tts_voice else "banmai",
-                max_agent_steps=15,
+                max_agent_steps=30,  # Tăng từ 15 lên 30 cho PowerPoint có nhiều slide
                 dry_run=False,
                 skip_tts=not enable_tts,
                 app_executable=app_info["exe"],
@@ -977,35 +1530,70 @@ def main(page: ft.Page):
                 review_event=review_evt,
                 review_result_holder=result_holder,
                 ready_event=os_ready_events.get(job_id),
+                enable_dual_output=enable_dual,
             )
 
             # Check result
             video_path = pipeline_result.get("video_final_path") or pipeline_result.get("video_raw_path")
+            document_path = pipeline_result.get("document_path")
+            pdf_path = pipeline_result.get("pdf_path")
 
             if job_id in running_jobs:
                 if video_path and Path(video_path).exists():
-                    running_jobs[job_id]["status"] = "Hoan thanh!"
+                    status_parts = ["Hoàn thành!"]
+                    if document_path and Path(document_path).exists():
+                        status_parts.append("DOCX")
+                    if pdf_path and Path(pdf_path).exists():
+                        status_parts.append("PDF")
+                    
+                    running_jobs[job_id]["status"] = " + ".join(status_parts)
                     running_jobs[job_id]["progress"] = 1.0
                     running_jobs[job_id]["video_path"] = str(video_path)
+                    if document_path:
+                        running_jobs[job_id]["document_path"] = str(document_path)
+                    if pdf_path:
+                        running_jobs[job_id]["pdf_path"] = str(pdf_path)
+                    update_jobs_display()
+                    
+                    # Show completion dialog
+                    await asyncio.sleep(0.5)
+                    show_completion_dialog(
+                        job_id=job_id,
+                        video_name=video_name,
+                        video_path=str(video_path),
+                        document_path=str(document_path) if document_path else None,
+                        pdf_path=str(pdf_path) if pdf_path else None,
+                        mode="desktop"
+                    )
                 else:
-                    error = pipeline_result.get("error", "Khong tao duoc video")
-                    running_jobs[job_id]["status"] = f"Loi: {error[:50]}"
+                    error = pipeline_result.get("error", "Không tạo được video")
+                    running_jobs[job_id]["status"] = f"Lỗi: {error[:50]}"
                     running_jobs[job_id]["progress"] = 0
+                    update_jobs_display()
+                    await asyncio.sleep(5)
+                    if job_id in running_jobs:
+                        del running_jobs[job_id]
+                        update_jobs_display()
+
+        except asyncio.CancelledError:
+            logger.info(f"Job #{job_id} (Desktop) cancelled successfully")
+            if job_id in running_jobs:
+                running_jobs[job_id]["status"] = "Đã hủy"
+                running_jobs[job_id]["progress"] = 0
                 update_jobs_display()
-                await asyncio.sleep(3)
+                
+                # Show cancelled status briefly
+                await asyncio.sleep(1.5)
+                
+                # Remove job from list
                 if job_id in running_jobs:
                     del running_jobs[job_id]
                     update_jobs_display()
-
-        except asyncio.CancelledError:
-            logger.info(f"Job #{job_id} cancelled")
-            if job_id in running_jobs:
-                del running_jobs[job_id]
-                update_jobs_display()
+                    logger.info(f"Job #{job_id} removed from running jobs")
         except Exception as ex:
             logger.exception(f"Job #{job_id} failed")
             if job_id in running_jobs:
-                running_jobs[job_id]["status"] = f"Loi: {str(ex)[:50]}"
+                running_jobs[job_id]["status"] = f"Lỗi: {str(ex)[:50]}"
                 running_jobs[job_id]["progress"] = 0
                 update_jobs_display()
                 await asyncio.sleep(5)
@@ -1044,7 +1632,7 @@ def main(page: ft.Page):
             "task": task,
             "video_name": video_name,
             "progress": 0,
-            "status": "Dang khoi dong...",
+            "status": "Đang khởi động...",
             "started": datetime.now(),
             "env": env,
         }

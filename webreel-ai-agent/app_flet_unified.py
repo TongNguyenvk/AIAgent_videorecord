@@ -18,6 +18,13 @@ import sys
 from datetime import datetime
 import requests
 
+import ctypes
+# Bắt buộc Python chạy ở chế độ Physical Pixels thay vì Logical Pixels
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    pass
+
 # Setup paths - import from both desktop_app and os_recorder
 ROOT_DIR = Path(__file__).parent
 DESKTOP_APP_DIR = ROOT_DIR / "desktop_app"

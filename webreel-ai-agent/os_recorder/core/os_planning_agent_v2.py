@@ -255,12 +255,11 @@ CRITICAL LIMITATION:
 - You CAN see everything in the SCREENSHOT. Use the screenshot to identify clickable areas visually.
 - For web page interactions, you MUST use "mouse_click" with (x, y) coordinates from the screenshot.
 
-COORDINATE GRID:
-The screenshot has a RED COORDINATE GRID overlay with labeled axes. USE these grid labels to estimate accurate coordinates:
-- Vertical red lines are labeled with X values (200, 400, 600, 800, ...)
-- Horizontal red lines are labeled with Y values (200, 400, 600, 800, ...)
-- To find coordinates of a target element, look at which grid lines are NEAREST to it and interpolate.
-- Example: If a button is halfway between x=1400 and x=1600 lines, and just below y=800 line, its coordinates are approximately (1500, 820).
+COORDINATE SIZING (Bounding Box Mode):
+- You MUST output the target element's location as a 2D bounding box `[ymin, xmin, ymax, xmax]` normalized to a 1000x1000 scale.
+- 0 means top/left edge, 1000 means bottom/right edge of the screenshot.
+- Example: If a button is at the exact center of the screen, the bounding box might be `[480, 480, 520, 520]`.
+- For web page interactions, you MUST use "mouse_click" with the "box" field.
 
 SPECIAL SHORTCUTS FOR COMMON TASKS:
 1. GOOGLE SEARCH: Instead of clicking the search box, use press_hotkey ["ctrl", "l"] to focus address bar, then type_text the query, then press_key "enter". This is MORE RELIABLE than clicking.
@@ -269,7 +268,7 @@ SPECIAL SHORTCUTS FOR COMMON TASKS:
 4. CLOSE TAB: Use press_hotkey ["ctrl", "w"].
 
 AVAILABLE ACTIONS:
-- mouse_click: Click at specific screen coordinates. Use "x" and "y" fields (integers). Use this for ALL web page elements.
+- mouse_click: Click at a specific bounding box. Use the "box" field (array of 4 numbers [ymin, xmin, ymax, xmax]). Use this for ALL web page elements.
 - type_text: Type text into the focused element. Use "text" field.
 - press_key: Press a key. Use "key" field. Allowed: a-z, 0-9, space, enter, tab, escape, right, left, up, down, f5, pageup, pagedown, home, end.
 - press_hotkey: Press key combination. Use "keys" array field. Allowed modifiers: shift, ctrl, alt.
@@ -305,8 +304,8 @@ EMAIL COMPOSE WORKFLOW (Gmail/Outlook):
 
 RULES:
 1. Return EXACTLY ONE action per response.
-2. For web page elements: ALWAYS use "mouse_click" with coordinates READ FROM THE GRID.
-3. In your "thought", ALWAYS mention the nearest grid lines to explain your coordinate choice.
+2. For web page elements: ALWAYS use "mouse_click" with the "box" field.
+3. In your "thought", explain your bounding box choice based on the visual screenshot.
 4. NEVER click directly on the browser address bar. Use press_hotkey ["ctrl", "l"] instead.
 5. For GOOGLE SEARCH, ALWAYS use Ctrl+L shortcut instead of clicking the search box.
 6. When a field is ALREADY FOCUSED (after Tab or after opening compose), use type_text directly. DO NOT click first.
@@ -534,14 +533,8 @@ class OSPlanningAgent:
             img_h = win_rect[3] if win_rect else 1080
             logger.info(f"  Screenshot: {screenshot_path} ({img_w}x{img_h})")
 
-            # 2.5 Tao ban sao co grid cho browser mode
+            # 2.5 Bo qua tao Grid, su dung Native Bounding Box
             gemini_screenshot = screenshot_path
-            if self.app_type == "browser":
-                gridded_path = str(self.output_dir / f"step_{step_idx:03d}_grid.png")
-                gemini_screenshot = _add_coordinate_grid(
-                    screenshot_path, gridded_path, grid_spacing=200
-                )
-                logger.info(f"  Grid overlay: {gemini_screenshot}")
 
             # 3. Lay element tree + prune + index
             root = get_element_tree(self.pid, max_depth=4)
@@ -1089,8 +1082,25 @@ class OSPlanningAgent:
                     })
 
             elif action_type == "mouse_click":
-                x = action.get("x", 0)
-                y = action.get("y", 0)
+                box = action.get("box")
+                if isinstance(box, list) and len(box) == 4:
+                    from PIL import Image
+                    try:
+                        with Image.open(step.screenshot_path) as img:
+                            img_w, img_h = img.size
+                    except Exception:
+                        img_w, img_h = 1920, 1080
+                    ymin, xmin, ymax, xmax = box
+                    center_x_norm = (xmin + xmax) / 2
+                    center_y_norm = (ymin + ymax) / 2
+                    x = int(center_x_norm * img_w / 1000)
+                    y = int(center_y_norm * img_h / 1000)
+                    logger.info(f"  [Bounding Box] Parsed box [y={ymin}:{ymax}, x={xmin}:{xmax}] -> Center ({x}, {y})")
+                else:
+                    # Fallback for old x,y format
+                    x = action.get("x", 0)
+                    y = action.get("y", 0)
+
                 replay_plan.append({
                     "action_type": "mouse_click",
                     "target_value": f"Click at ({x}, {y})",

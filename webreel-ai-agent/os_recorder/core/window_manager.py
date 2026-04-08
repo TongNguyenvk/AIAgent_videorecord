@@ -114,6 +114,27 @@ def get_visible_windows() -> list[dict]:
     return windows
 
 
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+
+def _get_window_bounds(hwnd: int) -> tuple[int, int, int, int] | None:
+    """Gets window bounds avoiding DWM invisible shadow borders."""
+    rect = ctypes.wintypes.RECT()
+    # Try DWM first 
+    result = dwmapi.DwmGetWindowAttribute(
+        hwnd, DWMWA_EXTENDED_FRAME_BOUNDS, ctypes.byref(rect), ctypes.sizeof(rect)
+    )
+    if result != 0: # If S_OK is not 0 (failed), fallback to GetWindowRect
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+
+    left = rect.left
+    top = rect.top
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+
+    if width > 0 and height > 0:
+        return (left, top, width, height)
+    return None
+
 def get_window_rect_by_pid(pid: int) -> tuple[int, int, int, int] | None:
     """
     Lay bounding box cua cua so theo PID.
@@ -135,16 +156,9 @@ def get_window_rect_by_pid(pid: int) -> tuple[int, int, int, int] | None:
         if window_pid != pid:
             return True
 
-        rect = ctypes.wintypes.RECT()
-        user32.GetWindowRect(hwnd, ctypes.byref(rect))
-
-        left = rect.left
-        top = rect.top
-        width = rect.right - rect.left
-        height = rect.bottom - rect.top
-
-        if width > 0 and height > 0:
-            result = (left, top, width, height)
+        bounds = _get_window_bounds(hwnd)
+        if bounds:
+            result = bounds
             return False  # Stop enumerating
 
         return True
@@ -164,14 +178,8 @@ def get_window_rect_by_hwnd(hwnd: int) -> tuple[int, int, int, int] | None:
     Returns:
         Tuple (left, top, width, height) hoac None.
     """
-    rect = ctypes.wintypes.RECT()
-    if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-        left = rect.left
-        top = rect.top
-        width = rect.right - rect.left
-        height = rect.bottom - rect.top
-        if width > 0 and height > 0:
-            return (left, top, width, height)
+    if user32.IsWindowVisible(hwnd):
+        return _get_window_bounds(hwnd)
     return None
 
 

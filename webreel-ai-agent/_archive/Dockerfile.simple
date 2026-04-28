@@ -1,0 +1,59 @@
+# Simplified Dockerfile for faster builds
+# Use Python base image instead of Playwright (smaller, faster)
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gnupg \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20 LTS
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g pnpm && \
+    apt-get clean
+
+# Copy and install Python dependencies
+COPY webreel-ai-agent/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Playwright and browsers
+RUN playwright install-deps && \
+    playwright install chromium
+
+# Copy webreel packages
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
+COPY packages/@webreel/core/package.json ./packages/@webreel/core/
+COPY packages/webreel/package.json ./packages/webreel/
+COPY packages/@webreel/core/src ./packages/@webreel/core/src
+COPY packages/@webreel/core/tsconfig.json ./packages/@webreel/core/
+COPY packages/webreel/src ./packages/webreel/src
+COPY packages/webreel/tsconfig.json ./packages/webreel/
+
+# Install and build webreel
+RUN pnpm install --frozen-lockfile && \
+    pnpm --filter @webreel/core build && \
+    pnpm --filter webreel build
+
+# Install Chrome headless-shell
+RUN node /app/packages/webreel/dist/index.js install
+
+# Copy Python application
+COPY webreel-ai-agent/src ./webreel-ai-agent/src
+COPY webreel-ai-agent/run_pipeline.py ./webreel-ai-agent/
+
+# Environment
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app/webreel-ai-agent
+ENV PATH="/root/.webreel/bin:${PATH}"
+
+# Create output directory
+RUN mkdir -p /app/output
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "webreel-ai-agent/src/app.py", "--server.port=8501", "--server.address=0.0.0.0"]

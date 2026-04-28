@@ -569,7 +569,7 @@ def phase5_execution(
     logger.info("Phase 5: The Execution (Webreel recording)")
     logger.info("=" * 80)
 
-    # Inject CDP URL for Chrome connection
+    # Pass CDP URL directly to Webreel (standard Chrome CDP)
     config["videos"][video_name]["cdpUrl"] = cdp_url
 
     # Record

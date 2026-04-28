@@ -1,0 +1,220 @@
+# ============================================================
+# WebReel Production Stack
+# API + Redis (INTERNAL ONLY) + Web Worker (with built-in Chrome)
+# ============================================================
+#
+# SECURITY: Redis KHONG expose ra ngoai.
+# Windows OS Worker ket noi qua SSH Tunnel:
+#   ssh -N -L 6379:localhost:6379 user@vps-ip
+#   set REDIS_URL=redis://localhost:6379/0
+#   python -m worker.os_worker
+#
+# TRUOC KHI CHAY: Tao swap space 2-4GB tren VPS:
+#   sudo fallocate -l 4G /swapfile
+#   sudo chmod 600 /swapfile
+#   sudo mkswap /swapfile
+#   sudo swapon /swapfile
+#   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+#
+
+services:
+  # --- Redis (INTERNAL ONLY - khong expose port ra ngoai!) ---
+  redis:
+    image: redis:7-alpine
+    container_name: webreel-redis
+    # KHONG co ports: mapping -> chi container trong mang noi bo truy cap duoc
+    # Bot scan (Shodan, masscan) se KHONG tim thay Redis cua ban
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-webreel_secret_2026}
+      --protected-mode yes
+      --bind 0.0.0.0
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-webreel_secret_2026}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 320M
+
+  # --- FastAPI Backend ---
+  api:
+    build:
+      context: ..
+      dockerfile: webreel-ai-agent/Dockerfile.backend
+    container_name: webreel-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-webreel_secret_2026}@redis:6379/0
+      - OUTPUT_DIR=/app/output
+      - PYTHONIOENCODING=utf-8
+    volumes:
+      - ./output:/app/output
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  # --- Web Worker (polls web-queue, runs pipeline + built-in Chrome) ---
+  web-worker:
+    build:
+      context: ..
+      dockerfile: webreel-ai-agent/Dockerfile.backend
+    container_name: webreel-web-worker
+    working_dir: /app/webreel-ai-agent
+    # Override CMD: entrypoint starts Xvfb + VNC + noVNC, then runs worker
+    entrypoint: ["/app/docker-entrypoint.sh"]
+    command: ["python", "-m", "worker.web_worker"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NODE_OPTIONS="--max-old-space-size=2048"
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-webreel_secret_2026}@redis:6379/0
+      - CHROME_CDP_URL=http://localhost:9222
+      - DISPLAY=:99
+      - WORKER_ID=web-worker-1
+      - OUTPUT_DIR=/app/output
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - FPT_API_KEY=${FPT_API_KEY:-}
+      - PYTHONIOENCODING=utf-8
+    shm_size: "2gb"
+    ports:
+      # noVNC: access via SSH tunnel (ssh -L 6080:localhost:6080 user@vps)
+      # then open http://localhost:6080/vnc.html
+      - "127.0.0.1:6080:6080"
+    volumes:
+      - ./output:/app/output
+      - ./chrome_profile:/app/chrome_profile
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # --- Office Worker (polls office-queue, runs slide pipeline) ---
+  office-worker:
+    build:
+      context: ..
+      dockerfile: webreel-ai-agent/Dockerfile.backend
+    container_name: webreel-office-worker
+    working_dir: /app/webreel-ai-agent
+    command: ["python", "-m", "worker.office_worker"]
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-webreel_secret_2026}@redis:6379/0
+      - WORKER_ID=office-worker-1
+      - OUTPUT_DIR=/app/output
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - PYTHONIOENCODING=utf-8
+    volumes:
+      - ./output:/app/output
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # --- Presentation Worker (PowerPoint Online testing via Chrome) ---
+  presentation-worker:
+    build:
+      context: ..
+      dockerfile: webreel-ai-agent/Dockerfile.backend
+    container_name: webreel-presentation-worker
+    working_dir: /app/webreel-ai-agent
+    entrypoint: ["/app/docker-entrypoint.sh"]
+    command: ["python", "-m", "worker.presentation_worker"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NODE_OPTIONS="--max-old-space-size=2048"
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-webreel_secret_2026}@redis:6379/0
+      - CHROME_CDP_URL=http://localhost:9222
+      - DISPLAY=:99
+      - WORKER_ID=presentation-worker-1
+      - OUTPUT_DIR=/app/output
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - FPT_API_KEY=${FPT_API_KEY:-}
+      - PYTHONIOENCODING=utf-8
+      - MS_CLIENT_ID=${MS_CLIENT_ID:-}
+      - MS_CLIENT_SECRET=${MS_CLIENT_SECRET:-}
+      - MS_TENANT_ID=${MS_TENANT_ID:-}
+      - MS_BOT_EMAIL=${MS_BOT_EMAIL:-}
+    shm_size: "2gb"
+    ports:
+      # noVNC: access via SSH tunnel (ssh -L 6081:localhost:6081 user@vps)
+      # then open http://localhost:6081/vnc.html
+      - "127.0.0.1:6081:6080"
+    volumes:
+      - ./output:/app/output
+      - ./chrome_profile:/app/chrome_profile
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # --- Auto-Scaler (event-driven worker scaling) ---
+  autoscaler:
+    build:
+      context: ..
+      dockerfile: webreel-ai-agent/Dockerfile.backend
+    container_name: webreel-autoscaler
+    working_dir: /app/webreel-ai-agent
+    command: ["python", "-m", "worker.autoscaler"]
+    environment:
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-webreel_secret_2026}@redis:6379/0
+      - MAX_WORKERS=4
+      - MIN_WORKERS=0
+      - IDLE_TIMEOUT=300
+      - COMPOSE_FILE=/compose/docker-compose.prod.yml
+      - COMPOSE_PROJECT=webreel-ai-agent
+      - WORKER_SERVICE=web-worker
+    volumes:
+      # Mount Docker socket so autoscaler can control docker compose
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount compose file so it can read service definitions
+      - .:/compose:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+volumes:
+  redis_data:
+
+# Tong RAM: 320M (Redis) + 1G (API) + 2G (Worker x N) + 128M (Autoscaler)
+# VPS 8GB: thoai mai voi max 3 workers.
+# Autoscaler tu dong scale worker len khi co job, xuong khi ranh 5 phut.

@@ -141,7 +141,7 @@ def run_worker():
 
     logger.info(f"OS Worker {WORKER_ID} started")
     logger.info(f"Queue: {QUEUE_NAME}")
-    logger.info(f"Redis: {queue.redis_url}")
+    logger.info(f"Redis: {queue._sanitize_url(queue.redis_url)}")
     logger.info(f"Idle threshold: {IDLE_THRESHOLD_SEC}s")
     logger.info("Waiting for jobs (will only process when user is idle)...")
 
@@ -173,6 +173,7 @@ def run_worker():
 
             result = process_os_job(job)
             queue.set_result(job_id, result)
+            queue.ack(QUEUE_NAME, job)
             queue.notify_api(job_id)
 
             logger.info(f"OS Job {job_id} -> {result.get('status')}")

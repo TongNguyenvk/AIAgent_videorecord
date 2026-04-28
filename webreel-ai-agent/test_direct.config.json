@@ -1,0 +1,44 @@
+{
+  "$schema": "https://webreel.dev/schema/v1.json",
+  "videos": {
+    "test-direct": {
+      "url": "https://vi.wikipedia.org/wiki/Nghiêm_Phục",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "zoom": 1.5,
+      "defaultDelay": 300,
+      "steps": [
+        {
+          "action": "pause",
+          "ms": 3000
+        },
+        {
+          "action": "scroll",
+          "y": 500
+        },
+        {
+          "action": "pause",
+          "ms": 2000
+        },
+        {
+          "action": "scroll",
+          "y": 500
+        },
+        {
+          "action": "pause",
+          "ms": 2000
+        },
+        {
+          "action": "scroll",
+          "y": 500
+        },
+        {
+          "action": "pause",
+          "ms": 2000
+        }
+      ]
+    }
+  }
+}

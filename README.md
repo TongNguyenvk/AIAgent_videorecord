@@ -160,4 +160,35 @@ Output:
 
 ---
 
+## 6. Kế hoạch Commit (Tuần 2: Parser & AI Reviewer)
+
+Dưới đây là lịch trình thực hiện và danh sách các file cần commit cho 5 ngày làm việc của Tuần 2 (đảm bảo mỗi cuối ngày sẽ thực hiện 1 commit hoàn chỉnh):
+
+*   **Ngày 1: Xây dựng Parser (bu_to_webreel.py) cơ bản**
+    *   *Mục tiêu:* Parse được history (navigate, click, input, wait), ánh xạ action và tính timing căn bản để xuất JSON theo Schema.
+    *   *File cập nhật:* `webreel-ai-agent/src/bu_to_webreel.py`
+    *   *Commit message:* `feat(parser): init browser-use to webreel config parser`
+
+*   **Ngày 2: Tối ưu Selector & Xử lý Edge Cases (bu_to_webreel.py)**
+    *   *Mục tiêu:* Trích xuất DOM selectors (với cơ chế mảng dự phòng `[xpath, css]`), URL decode, xử lý dynamic selectors và bỏ qua scroll actions. Bắt exception và fallback.
+    *   *File cập nhật:* `webreel-ai-agent/src/bu_to_webreel.py`
+    *   *Commit message:* `feat(parser): enhance selector extraction and handle edge cases`
+
+*   **Ngày 3: Khởi tạo AI Reviewer (ai_reviewer.py)**
+    *   *Mục tiêu:* Tích hợp Gemini API, thiết kế system prompt đặc tả Schema V1. Review và sửa lỗi selector bị sai, tính lại duration cho mượt.
+    *   *File cập nhật:* `webreel-ai-agent/src/ai_reviewer.py`
+    *   *Commit message:* `feat(ai-reviewer): integrate Gemini API for config analysis and validation`
+
+*   **Ngày 4: Sinh Script & Đồng bộ Giọng nói (ai_reviewer.py/run_pipeline_unified_chrome.py)**
+    *   *Mục tiêu:* Sinh TTS Script kịch bản lồng tiếng tiếng Việt hoàn chỉnh. Tiêm `pause` ms, tính toán lại offset âm thanh để báo trước hành động.
+    *   *File cập nhật:* `webreel-ai-agent/src/ai_reviewer.py`, `webreel-ai-agent/run_pipeline_unified_chrome.py`
+    *   *Commit message:* `feat(ai-reviewer): generate synchronized TTS scripts and timing points`
+
+*   **Ngày 5: Hoàn thiện Test Suite & Viết Tài Liệu Công Nghệ**
+    *   *Mục tiêu:* Viết Unit tests cho Parser, test với nhiều loại form fallback. Viết Markdown documentation cho các Component mới.
+    *   *File cập nhật:* `docs/BU_TO_WEBREEL.md`, `docs/AI_REVIEWER.md`, `webreel-ai-agent/test-cases/*`
+    *   *Commit message:* `docs: add detailed documentation for Parser and AI Reviewer features`
+
+---
+
 Ghi chú: Mã nguồn và tài liệu thuộc khuôn khổ đồ án tốt nghiệp/cấp cơ sở năm học 2025-2026.

@@ -142,13 +142,31 @@ FPT_API_KEY=your_fpt_api_key_here
 
 **Bước 4:** Khởi chạy dự án
 
-Chạy bằng Docker (khuyến nghị):
+### Kiến trúc mới: FastAPI Backend + Streamlit Frontend
+
+Hệ thống đã được nâng cấp với kiến trúc tách biệt backend/frontend, hỗ trợ xử lý đồng thời nhiều yêu cầu và cập nhật tiến độ thời gian thực.
+
+**Khởi chạy Backend (Terminal 1):**
 
 ```bash
-docker-compose up --build
+.\start_backend.bat
 ```
 
-Hoặc chạy trực tiếp:
+Backend sẽ chạy tại `http://localhost:8000`
+
+**Khởi chạy Frontend (Terminal 2):**
+
+```bash
+.\start_frontend.bat
+```
+
+Frontend sẽ chạy tại `http://localhost:8501`
+
+**Truy cập ứng dụng:** Mở trình duyệt tại `http://localhost:8501`
+
+### Chạy trực tiếp (Legacy mode)
+
+Vẫn có thể chạy pipeline trực tiếp từ command line:
 
 ```bash
 python run_pipeline.py "Vào google.com và tìm kiếm Python" --name demo
@@ -157,6 +175,14 @@ python run_pipeline.py "Vào google.com và tìm kiếm Python" --name demo
 Output:
 - Config: output/demo/webreel_pipeline.config.json
 - Video: output/demo/videos/demo.mp4
+
+### Tài liệu chi tiết
+
+Xem [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) để biết thêm chi tiết về:
+- Kiến trúc hệ thống mới
+- API endpoints và WebSocket protocol
+- Hướng dẫn khắc phục sự cố
+- Cấu hình triển khai production
 
 ---
 

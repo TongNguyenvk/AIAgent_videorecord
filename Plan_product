@@ -1,0 +1,232 @@
+# Phân tích cuối cùng: Kiến trúc sản xuất WebReel
+
+## Tình trạng hiện tại - Đã có rất nhiều
+
+Sau khi đọc toàn bộ codebase, đây là những gì bạn **ĐÃ CÓ SẴN** và hoạt động:
+
+| Thành phần | File | Tình trạng |
+|---|---|---|
+| Desktop App (UI) | `app_flet_unified.py` | Hoạt động, quản lý job/cancel/progress |
+| Web Pipeline (6 Phase) | `desktop_app/pipeline.py` | Hoạt động, browser-use + Webreel |
+| OS Pipeline (5 Phase) | `os_recorder/os_pipeline_main.py` | Hoạt động, pyautogui + COM + gdigrab |
+| Backend API | `backend/main.py` | Hoạt động, FastAPI + WebSocket + job queue |
+| Video-Audio Sync | `trace_composer.py` + `audio_injector.py` | Hoạt động, đã tinh chỉnh kỹ |
+| TTS | `tts.py` + `tts_edge.py` | Hoạt động, FPT AI + Edge TTS |
+| OS Executor | `os_executor_v2.py` | Hoạt động, drag_mouse + press_hotkey đầy đủ |
+| Planning Agent | `os_planning_agent_v2.py` | Hoạt động, Gemini + UIA + screenshot |
+| Document Export | `document_renderer.py` | Hoạt động, DOCX + PDF |
+| Docker setup | `Dockerfile` + `docker-compose.yml` | Có sẵn, Web Pipeline đã chạy được |
+
+> [!TIP]
+> **Bạn đã có ~90% hệ thống.** Phần còn lại chỉ là kiến trúc triển khai và kết nối các thành phần với nhau.
+
+---
+
+## Kiến trúc sản xuất: 3 đường chạy song song
+
+```mermaid
+graph TD
+    subgraph "Frontend"
+        WEB_UI["Web App (SPA)<br/>hoặc Flet Desktop"]
+    end
+
+    subgraph "Linux VPS - $5/tháng"
+        API["FastAPI Backend<br/>(backend/main.py ĐÃ CÓ)"]
+        REDIS["Redis Queue"]
+        
+        subgraph "Docker Workers (scale vô hạn)"
+            W_WEB["Web Worker<br/>(pipeline.py ĐÃ CÓ)<br/>Quay trang web"]
+            W_OFFICE["Office Web Worker<br/>(pipeline.py + Office Viewer)<br/>Quay bài giảng PPTX"]
+        end
+    end
+
+    subgraph "Windows Worker (máy bạn / mini PC)"
+        W_OS["OS Worker<br/>(os_pipeline_main.py ĐÃ CÓ)<br/>Demo thao tác Office native"]
+    end
+
+    WEB_UI -->|"REST + WebSocket"| API
+    API --> REDIS
+    REDIS -->|"web-queue"| W_WEB
+    REDIS -->|"office-queue"| W_OFFICE
+    REDIS -->|"os-queue"| W_OS
+    W_WEB -->|"MP4"| API
+    W_OFFICE -->|"MP4"| API
+    W_OS -->|"MP4 + DOCX"| API
+```
+
+### Đường 1: Web (ĐÃ CÓ SẴN)
+
+- **Khi nào dùng:** User cung cấp URL trang web cần quay tutorial
+- **Pipeline:** `desktop_app/pipeline.py` (6 Phase) - **không sửa gì**
+- **Chạy trên:** Docker Linux container
+- **Scale:** Vô hạn
+
+### Đường 2: Office Web (MỚI, ~150 dòng thêm)
+
+- **Khi nào dùng:** User upload file PPTX muốn tạo video bài giảng
+- **Pipeline:** Dùng lại `pipeline.py`, chỉ khác Phase 1 (mở Office Viewer thay vì URL trang web)
+- **Flow:**
+  1. User upload .pptx → server lưu file, tạo public URL
+  2. Phase 1: browser-use mở `view.officeapps.live.com/op/view.aspx?src=<URL>`, điều hướng slides, gọi `save_narration()`
+  3. Phase 2-6: **GIỐNG HỆT** Web Pipeline hiện tại (bu_to_webreel → TTS → inject → Webreel record → trace_composer)
+- **Chạy trên:** Docker Linux container
+- **Scale:** Vô hạn
+
+### Đường 3: OS Native (ĐÃ CÓ SẴN)
+
+- **Khi nào dùng:** Cần demo thao tác thật trên MS Office (click, edit, format, drag, bôi đen)
+- **Pipeline:** `os_recorder/os_pipeline_main.py` (5 Phase) - **không sửa gì**
+- **Chạy trên:** Windows (máy bạn, mini PC, hoặc máy ở Viện)
+- **Scale:** Giới hạn số máy Windows
+
+---
+
+## Rủi ro Office Viewer và phương án dự phòng
+
+Tôi đã test: Office Viewer trả về "File not found" khi file URL không truy cập được từ Internet. Đây là yêu cầu bắt buộc.
+
+### Điều kiện để Office Viewer hoạt động
+
+| Yêu cầu | Giải pháp |
+|---|---|
+| File phải có URL public | Server bạn cần public IP + domain. Hoặc dùng Cloudflare R2/S3 presigned URL |
+| Microsoft phải fetch được file | File serve qua HTTPS, không bị firewall chặn |
+| File đùng format (.pptx) | python-pptx có thể validate trước khi gửi |
+| Giới hạn kích thước (~10MB) | Chunk upload + nén ảnh trong PPTX trước khi gửi |
+
+### Nếu Office Viewer không ổn định (Plan B)
+
+**Dùng ONLYOFFICE trong Docker** - tương thích PPTX 90-95%:
+
+```yaml
+# Thêm vào docker-compose
+services:
+  onlyoffice:
+    image: onlyoffice/documentserver
+    ports:
+      - "8080:80"
+```
+
+Browser-use mở `http://onlyoffice:8080` thay vì `view.officeapps.live.com`. Toàn bộ pipeline phía sau **giữ nguyên**.
+
+### Nếu cần rendering tốt hơn (Plan C)
+
+**WPS Office Desktop trên Linux** + Xvfb + pyautogui (Linux UI Core):
+- WPS Office tương thích PPTX 92-97%
+- Cần thêm `ui_inspector_linux.py` + `window_manager_linux.py` (~350 dòng)
+- Thời gian: thêm 1-2 tuần
+
+---
+
+## Chi tiết: Những gì cần code
+
+### Phase 1: Backend lên VPS (tuần 1-2)
+
+**Khối lượng:** ~200 dòng sửa/thêm
+
+| Hạng mục | Chi tiết |
+|---|---|
+| `backend/queue.py` [NEW] | Redis wrapper: push job, poll job, lưu kết quả (~60 dòng) |
+| `backend/main.py` [SỬA] | Thay `BackgroundTasks` bằng Redis queue dispatch (~40 dòng sửa) |
+| `worker/web_worker.py` [NEW] | Worker chạy trong Docker, poll Redis, gọi `pipeline.py` (~80 dòng) |
+| `docker-compose.prod.yml` [NEW] | API + Redis + Web Worker (~40 dòng) |
+| `.env.production` [NEW] | Config cho VPS (~10 dòng) |
+
+**Kết quả:** Backend + Web Pipeline chạy trên VPS Linux, user submit job qua API.
+
+---
+
+### Phase 2: Thêm Office Viewer mode (tuần 3-4)
+
+**Khối lượng:** ~150 dòng thêm
+
+| Hạng mục | Chi tiết |
+|---|---|
+| `backend/file_server.py` [NEW] | Serve file PPTX với signed URL (~60 dòng) |
+| `desktop_app/pipeline.py` [SỬA] | Thêm `phase1_scout_pptx()` với prompt cho Office Viewer (~50 dòng) |
+| `backend/main.py` [SỬA] | Thêm route `POST /upload-pptx` + dispatch qua Redis (~40 dòng) |
+
+**Kết quả:** User upload PPTX → mở trên Office Viewer → quay bằng Web Pipeline → video MP4.
+
+---
+
+### Phase 3: Windows Worker kết nối VPS (tuần 4-5)
+
+**Khối lượng:** ~200 dòng thêm
+
+| Hạng mục | Chi tiết |
+|---|---|
+| `worker/os_worker.py` [NEW] | Chạy trên Windows, poll Redis `os-queue`, gọi `os_pipeline_main.py` (~100 dòng) |
+| `worker/idle_detector.py` [NEW] | Chỉ nhận job khi user không dùng máy (~50 dòng) |
+| `worker/uploader.py` [NEW] | Upload kết quả (MP4/DOCX/PDF) về VPS qua HTTP (~50 dòng) |
+
+**Kết quả:** Máy Windows tự động nhận job OS từ VPS, chạy xong gửi kết quả về.
+
+---
+
+## Timeline tổng hợp
+
+```mermaid
+gantt
+    title Lộ trình triển khai WebReel Production
+    dateFormat  YYYY-MM-DD
+    
+    section Phase 1: Backend VPS
+    Redis queue wrapper         :p1a, 2026-04-07, 3d
+    Docker compose prod         :p1b, after p1a, 2d
+    Web Worker                  :p1c, after p1a, 3d
+    Deploy + test               :p1d, after p1c, 2d
+    
+    section Phase 2: Office Viewer
+    File server (signed URL)    :p2a, after p1d, 2d
+    Office Viewer prompt        :p2b, after p2a, 2d
+    Test + fix bugs             :p2c, after p2b, 3d
+    
+    section Phase 3: Windows Worker
+    OS Worker + Redis           :p3a, after p2c, 3d
+    Idle detector               :p3b, after p3a, 2d
+    Test end-to-end             :p3c, after p3b, 3d
+```
+
+**Tổng: ~6 tuần** cho toàn bộ hệ thống production.
+
+---
+
+## Chi phí vận hành cuối cùng
+
+| Hạng mục | Chi phí | Ghi chú |
+|---|---|---|
+| VPS Linux (Hetzner/Vultr) | $5/tháng | API + Redis + Docker Workers |
+| Domain + SSL | $0 | Cloudflare free tier |
+| Gemini API | ~$0-5/tháng | Free tier 1500 requests/ngày |
+| Edge TTS | $0 | Miễn phí |
+| Mini PC (nếu mua) | ~1 triệu VNĐ (1 lần) | Chạy OS Worker 24/7 |
+| **Tổng** | **~$5-10/tháng** | Scale được hàng trăm Web/Office jobs |
+
+---
+
+## Code cần giữ nguyên 100% (không sửa)
+
+> [!IMPORTANT]
+> Những module sau **KHÔNG ĐƯỢC SỬA** vì đã được tinh chỉnh kỹ:
+
+| Module | Lý do |
+|---|---|
+| `trace_composer.py` | Sync video+audio bằng trace timestamp, đã debug nhiều lần |
+| `audio_injector.py` | Inject duration vào `[NARRATION:idx]`, tính toán chính xác |
+| `bu_to_webreel.py` | Parser history → Webreel config |
+| `webreel_runner.py` | Quản lý Webreel CLI, cursor rendering |
+| `os_executor_v2.py` | Mouse/keyboard automation, drag_mouse, press_hotkey |
+| `os_planning_agent_v2.py` | Gemini + UIA + screenshot planning |
+| `sync_recorder.py` | FFmpeg gdigrab sync với execution |
+| `tts.py` / `tts_edge.py` | TTS generation + measurement |
+
+---
+
+## Câu hỏi cuối trước khi bắt tay làm
+
+> [!IMPORTANT]
+> 1. **Bạn đã có VPS Linux chưa?** (Từ conversation trước về deploy subdomain, hình như bạn đã có 1 con VPS `.tech`?)
+> 2. **Redis:** Cài trên VPS luôn hay dùng cloud Redis (Upstash miễn phí 10K requests/ngày)?
+> 3. **Ưu tiên Phase nào trước?** Phase 1 (Backend lên VPS) hay Phase 2 (Office Viewer) hay Phase 3 (Windows Worker)?
+> 4. **Bạn muốn tôi bắt đầu code luôn không?** Tôi sẽ bắt đầu từ `backend/queue.py` + `worker/web_worker.py`.

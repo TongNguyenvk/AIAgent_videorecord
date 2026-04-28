@@ -4,11 +4,9 @@
 
 AI Agent Video Tutor là hệ thống tự động hóa quay video hướng dẫn thực hành từ mô tả văn bản bằng tiếng Việt hoặc tiếng Anh. Hệ thống sử dụng AI Agent để điều khiển trình duyệt, ghi lại các thao tác và tạo video MP4 hoàn chỉnh kèm giọng thuyết minh.
 
-**Sinh viên thực hiện:** Nguyễn Văn Tổng
+**Sinh viên thực hiện:** Nguyễn Văn Tổng - 110122188
 
 **Năm học:** 2025-2026
-
-**Loại đồ án:** Đồ án tốt nghiệp/cấp cơ sở
 
 ## Bài toán cần giải quyết
 

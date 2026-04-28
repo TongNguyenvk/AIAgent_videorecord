@@ -1,0 +1,105 @@
+{
+  "$schema": "https://webreel.dev/schema/v1.json",
+  "videos": {
+    "ctrl_f5_fix_test": {
+      "url": "https://onedrive.live.com/edit.aspx?resid=F0E0A7155C52A83!s169d86f212c14007ae9ae941336b0147",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "theme": {
+        "cursor": {
+          "size": 24,
+          "hotspot": "top-left"
+        }
+      },
+      "defaultDelay": 300,
+      "fps": 30,
+      "steps": [
+        {
+          "action": "pause",
+          "ms": 3000,
+          "description": "Wait for initial page to load"
+        },
+        {
+          "action": "pause",
+          "ms": 3000,
+          "description": "[NARRATION:0] Chào mừng các bạn đến với bài giảng về Dự đoán rủi ro trong quản lý dự án."
+        },
+        {
+          "action": "key",
+          "key": "Control+F5"
+        },
+        {
+          "action": "pause",
+          "ms": 11436,
+          "description": "[NARRATION:1] Chào mừng các bạn đến với bài giảng về Dự đoán rủi ro trong quản lý dự án. Đây là nền tảng quan trọng để chúng ta chủ động kiểm soát và giảm thiểu các tác động tiêu cực đến tiến độ công việc."
+        },
+        {
+          "action": "key",
+          "key": "Space"
+        },
+        {
+          "action": "pause",
+          "ms": 11340,
+          "description": "[NARRATION:2] Tiếp theo, chúng ta sẽ tìm hiểu về Rủi ro kỹ thuật. Đây là những vấn đề phát sinh từ công nghệ hoặc quy trình kỹ thuật có thể ảnh hưởng trực tiếp đến chất lượng và tiến độ hoàn thành dự án."
+        },
+        {
+          "action": "key",
+          "key": "Space"
+        },
+        {
+          "action": "pause",
+          "ms": 11412,
+          "description": "[NARRATION:3] Tiếp theo, chúng ta cùng xem xét Rủi ro nhân sự. Đây là những thách thức liên quan đến đội ngũ, kỹ năng hoặc sự thiếu hụt nhân lực có thể làm gián đoạn kế hoạch dự án của chúng ta."
+        },
+        {
+          "action": "key",
+          "key": "Space"
+        },
+        {
+          "action": "pause",
+          "ms": 11604,
+          "description": "[NARRATION:4] Tiếp theo, chúng ta cùng tìm hiểu về Rủi ro tiến độ. Đây là những rủi ro liên quan đến thời gian, có thể làm chậm trễ các mốc quan trọng và ảnh hưởng đến toàn bộ kế hoạch dự án."
+        },
+        {
+          "action": "key",
+          "key": "Space"
+        },
+        {
+          "action": "pause",
+          "ms": 11436,
+          "description": "[NARRATION:5] Tiếp theo, chúng ta cùng thảo luận về Rủi ro tài chính. Đây là những biến động liên quan đến chi phí, nguồn vốn và ngân sách có thể ảnh hưởng đến khả năng duy trì dự án của chúng ta."
+        },
+        {
+          "action": "key",
+          "key": "Space"
+        },
+        {
+          "action": "pause",
+          "ms": 11004,
+          "description": "[NARRATION:6] Tiếp theo, chúng ta sẽ xây dựng Kế hoạch ứng phó. Đây là bước then chốt để xác định các phương án hành động cụ thể nhằm kiểm soát hoặc giảm thiểu tác động khi rủi ro thực sự xảy ra."
+        },
+        {
+          "action": "key",
+          "key": "Space"
+        },
+        {
+          "action": "pause",
+          "ms": 11196,
+          "description": "[NARRATION:7] Cuối cùng, chúng ta cùng Tóm tắt lại những nội dung chính đã học. Việc nhận diện và ứng phó kịp thời với các rủi ro là chìa khóa để đảm bảo sự thành công bền vững cho mọi dự án."
+        },
+        {
+          "action": "key",
+          "key": "Escape"
+        },
+        {
+          "action": "pause",
+          "ms": 5000,
+          "description": "Final tail pause"
+        }
+      ],
+      "cdpUrl": "http://localhost:9222"
+    }
+  }
+}

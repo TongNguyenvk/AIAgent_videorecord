@@ -1,0 +1,137 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** - Multi-Segment Timeline Synchronization
+  - **CRITICAL**: This test MUST FAIL on unfixed code - failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior - it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate timeline divergence, audio overlaps, and premature termination
+  - **Scoped PBT Approach**: Scope the property to the w3test case (3 narration segments) to ensure reproducibility
+  - Test that for multi-segment videos (w3test case with 3 segments):
+    - AI reviewer timeline estimates match actual TTS durations (within 20% tolerance)
+    - Audio sync `accumulated_time_ms` matches actual video timeline
+    - Page load waits (3000ms) are accounted for in timeline calculation
+    - Pause injection reordering is reflected in `start_time` values
+    - No audio overlaps occur at segment transitions
+    - All actions execute before video termination
+  - Run test on UNFIXED code
+  - **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists)
+  - Document counterexamples found:
+    - AI reviewer estimates vs actual TTS durations divergence
+    - `accumulated_time_ms` vs actual video timeline mismatch
+    - Audio overlap timestamps
+    - Actions that don't execute before termination
+  - Mark task complete when test is written, run, and failure is documented
+  - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10_
+
+- [x] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** - Single-Segment Video Synchronization
+  - **IMPORTANT**: Follow observation-first methodology
+  - Observe behavior on UNFIXED code for single-segment videos:
+    - Run simple "navigate to google.com" task with one narration segment
+    - Measure TTS duration, video timeline, and audio overlay timing
+    - Record output video characteristics (duration, audio sync quality)
+  - Write property-based tests capturing observed behavior patterns:
+    - For all single-segment videos, TTS generation produces correct audio
+    - For all single-segment videos, webreel recording captures actions correctly
+    - For all single-segment videos, MoviePy composition synchronizes audio correctly
+    - For all single-segment videos, narration-before-action pattern works correctly
+  - Property-based testing generates many test cases for stronger guarantees
+  - Run tests on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10_
+
+- [x] 3. Fix video-audio synchronization for multi-segment videos
+
+  - [x] 3.1 Fix AI reviewer timeline calculation (ai_reviewer.py)
+    - Add page load wait accounting to `calculate_timeline()`:
+      - Change navigate duration from 2.0s to 5.0s (2.0s + 3.0s page load wait)
+      - Change click duration from 0.5s to 3.5s (0.5s + 3.0s page load wait)
+    - Add timeline validation hook:
+      - Add optional parameter `tts_segments: list[AudioSegment] | None = None`
+      - Compare estimated narration durations against actual TTS durations
+      - Log warnings if divergence exceeds 20% threshold
+    - Return enhanced timeline metadata:
+      - Add `total_duration` field to return value
+      - Add `narration_points` list indicating where narration segments should be inserted
+    - _Bug_Condition: isBugCondition(input) where input.narration_segments.length > 1 AND timeline calculations diverge_
+    - _Expected_Behavior: AI reviewer timeline estimates match actual TTS durations and account for page load waits_
+    - _Preservation: AI reviewer's intelligent narration content generation continues to work_
+    - _Requirements: 2.3, 2.9, 2.10, 3.4_
+
+  - [x] 3.2 Fix audio sync optimizer timeline tracking (audio_sync_optimizer.py)
+    - Fix accumulated time calculation in `inject_audio_pauses()`:
+      - When injecting narration pause BEFORE action, set `seg.start_time = accumulated_time_ms / 1000.0` BEFORE adding pause duration
+      - Add narration pause duration to `accumulated_time_ms` BEFORE processing action
+      - This ensures `start_time` reflects when audio should start in actual video timeline
+    - Fix page load wait timing:
+      - For navigate actions: add action duration (0ms) + page_load_wait_ms (3000ms)
+      - For click actions: add click animation (500ms) + defaultDelay + page_load_wait_ms (3000ms) only if click triggers page load
+      - Add waits AFTER action duration, not during
+    - Add timeline validation:
+      - Accept AI reviewer timeline as parameter: `ai_timeline: list[dict] | None = None`
+      - After building new_steps, calculate total duration and compare against AI timeline
+      - Log warnings if divergence exceeds threshold
+    - Improve segment mapping:
+      - Use AI reviewer's narration_points instead of sequential mapping
+      - Replace current sequential `step_to_segment` with mapping based on AI reviewer's intended timeline
+      - Ensure narration segments align with actions they describe
+    - _Bug_Condition: isBugCondition(input) where accumulated_time_ms != actual_video_timeline_
+    - _Expected_Behavior: start_time values accurately reflect actual video timeline with all waits and reordering_
+    - _Preservation: Narration-before-action design pattern continues to work_
+    - _Requirements: 2.1, 2.2, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 3.7_
+
+  - [x] 3.3 Connect AI reviewer timeline to audio sync optimizer (run_pipeline_unified_chrome.py)
+    - Pass timeline between phases:
+      - In `ai_review_config()`, return timeline from `calculate_timeline()` along with tts_script
+      - In `audio_sync_phase()`, accept AI timeline and pass it to `inject_audio_pauses()`
+      - After TTS generation, pass actual audio segments back to `calculate_timeline()` for validation
+    - Add validation logging:
+      - Log AI reviewer estimated total duration
+      - Log audio sync optimizer calculated total duration
+      - Log any divergence warnings
+    - Add timeline checkpoint:
+      - Save AI reviewer timeline to `{output_dir}/ai_timeline.json`
+      - Save audio sync timeline to `{output_dir}/audio_sync_timeline.json`
+      - Enable post-mortem analysis of timing issues
+    - _Bug_Condition: isBugCondition(input) where phases use separate timeline calculations_
+    - _Expected_Behavior: AI reviewer timeline is single source of truth validated across all phases_
+    - _Preservation: Existing phase structure and Chrome CDP integration continue to work_
+    - _Requirements: 2.3, 2.4, 2.5, 3.5, 3.6_
+
+  - [x] 3.4 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** - Multi-Segment Timeline Synchronization
+    - **IMPORTANT**: Re-run the SAME test from task 1 - do NOT write a new test
+    - The test from task 1 encodes the expected behavior
+    - When this test passes, it confirms the expected behavior is satisfied
+    - Run bug condition exploration test from step 1
+    - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed)
+    - Verify for w3test case:
+      - AI reviewer timeline estimates match actual TTS durations (within 20% tolerance)
+      - Audio sync `accumulated_time_ms` matches actual video timeline
+      - Page load waits are accounted for in timeline calculation
+      - Pause injection reordering is reflected in `start_time` values
+      - No audio overlaps occur at segment transitions
+      - All actions execute before video termination
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10_
+
+  - [x] 3.5 Verify preservation tests still pass
+    - **Property 2: Preservation** - Single-Segment Video Synchronization
+    - **IMPORTANT**: Re-run the SAME tests from task 2 - do NOT write new tests
+    - Run preservation property tests from step 2
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions)
+    - Verify for single-segment videos:
+      - TTS generation produces correct audio
+      - Webreel recording captures actions correctly
+      - MoviePy composition synchronizes audio correctly
+      - Narration-before-action pattern works correctly
+    - Confirm all tests still pass after fix (no regressions)
+    - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7, 3.8, 3.9, 3.10_
+
+- [x] 4. Checkpoint - Ensure all tests pass
+  - Run all bug condition tests and verify they pass
+  - Run all preservation tests and verify they pass
+  - Manually review w3test composed video to verify visual and audio synchronization quality
+  - Test with additional multi-segment cases (5+ segments) to verify robustness
+  - Ensure all tests pass, ask the user if questions arise

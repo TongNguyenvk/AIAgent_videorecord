@@ -112,6 +112,8 @@ export class Recorder {
         "+faststart",
         "-r",
         String(this.fps),
+        "-vsync",
+        "cfr",
         this.tempVideo,
       ],
       { stdio: ["pipe", "pipe", "pipe"] },
@@ -215,10 +217,9 @@ export class Recorder {
         if (!this.running) break;
         consecutiveErrors++;
         
-        // During page navigations, captureScreenshot can throw rapidly.
-        // Wait a frame before retrying, and increase tolerance to 300 (~10s at 30fps).
+        // Wait a frame before retrying, and increase tolerance to 30 (~1s at 30fps).
         // This prevents the silent type hang from deadlock when React DOM shifts.
-        if (consecutiveErrors >= 300) {
+        if (consecutiveErrors >= 30) {
           console.error(
             `Recording aborted after ${consecutiveErrors} consecutive capture failures:`,
             err,

@@ -1,1 +1,476 @@
-{}
+{
+  "2933ac89-32f2-48a6-b86f-27d6dc0c5871": {
+    "job_id": "2933ac89-32f2-48a6-b86f-27d6dc0c5871",
+    "status": "completed",
+    "task": "Vào http://127.0.0.1:5500/webreel-ai-agent/test-cases/demoform.html, đăng nhập với tài khoản admin/123456, điền form hồ sơ nhân viên với tên Nguyễn Văn A, phòng IT, giới tính Nam, tích cam kết, sau đó xác nhận và hoàn tất.",
+    "video_name": "demo",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": false
+    },
+    "progress": {
+      "current_phase": 5,
+      "phase_name": "Execution",
+      "message": "Phase 5: Recording video with Webreel...",
+      "logs": []
+    },
+    "result": {
+      "video_path": "output\\demo\\demo.mp4",
+      "video_url": "/videos/demo/demo.mp4",
+      "duration_seconds": null
+    },
+    "error": null,
+    "created_at": "2026-03-23T03:30:42.891998+00:00",
+    "started_at": "2026-03-23T03:30:42.893025+00:00",
+    "completed_at": "2026-03-23T03:35:33.513361+00:00"
+  },
+  "5d1fe917-45d2-490c-bcd6-ee5dd9be0ce8": {
+    "job_id": "5d1fe917-45d2-490c-bcd6-ee5dd9be0ce8",
+    "status": "completed",
+    "task": "Vào http://127.0.0.1:5500/webreel-ai-agent/test-cases/demoform.html, đăng nhập với tài khoản admin/123456, điền form hồ sơ nhân viên với tên Nguyễn Văn A, phòng IT, giới tính Nam, tích cam kết, sau đó xác nhận và hoàn tất.",
+    "video_name": "demobyweb",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": false
+    },
+    "progress": {
+      "current_phase": 6,
+      "phase_name": "Composer",
+      "message": "Phase 6: Composing final video...",
+      "logs": []
+    },
+    "result": {
+      "video_path": "output\\demobyweb\\demobyweb_final.mp4",
+      "video_url": "/videos/demobyweb/demobyweb_final.mp4",
+      "duration_seconds": null
+    },
+    "error": null,
+    "created_at": "2026-03-23T07:13:42.832729+00:00",
+    "started_at": "2026-03-23T07:13:42.832729+00:00",
+    "completed_at": "2026-03-23T07:20:26.340406+00:00"
+  },
+  "a941cea6-3e9b-4fcd-a933-768f0ab513e4": {
+    "job_id": "a941cea6-3e9b-4fcd-a933-768f0ab513e4",
+    "status": "failed",
+    "task": "Vào trang http://localhost:8000 và hướng dẫn cách sử dụng web app AI Video Tutor v3. \nGiải thích các tính năng chính: nhập kịch bản là vào trang http://127.0.0.1:5500/webreel-ai-agent/test-cases/demoform.html đăng nhập, tạo video, xem kết quả ở bước 2.5 thì cứ ấn tiếp tục không cần xem gì hết, sau khi video làm xong thì qua tab kết quả để thấy video.",
+    "video_name": "testjob",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": false
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "'BrowserSession' object has no attribute 'get_all_pages'",
+    "created_at": "2026-03-23T07:46:15.982050+00:00",
+    "started_at": "2026-03-23T07:46:15.982050+00:00",
+    "completed_at": "2026-03-23T07:46:23.351034+00:00"
+  },
+  "3facc45c-48e0-4a03-b595-66b2cefba45a": {
+    "job_id": "3facc45c-48e0-4a03-b595-66b2cefba45a",
+    "status": "failed",
+    "task": "Vào trang http://localhost:8000 và hướng dẫn cách sử dụng web app AI Video Tutor v3. \nGiải thích các tính năng chính: nhập kịch bản là vào trang http://127.0.0.1:5500/webreel-ai-agent/test-cases/demoform.html sau đó đăng nhập và dừng luôn ngay sau khi đăng nhập xong, tạo video, xem kết quả ở bước 2.5 thì cứ ấn tiếp tục không cần xem gì hết, sau khi video làm xong thì qua tab kết quả để thấy video.",
+    "video_name": "testjob",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 500,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "'Page' object has no attribute 'target_id'",
+    "created_at": "2026-03-23T07:57:27.382624+00:00",
+    "started_at": "2026-03-23T07:57:27.382624+00:00",
+    "completed_at": "2026-03-23T07:57:34.894149+00:00"
+  },
+  "6ffb5056-1e18-49df-ae62-661aa6c4a0fe": {
+    "job_id": "6ffb5056-1e18-49df-ae62-661aa6c4a0fe",
+    "status": "cancelled",
+    "task": "Vào trang http://localhost:8000 và hướng dẫn cách sử dụng web app AI Video Tutor v3. \nGiải thích các tính năng chính: nhập kịch bản là vào trang http://127.0.0.1:5500/webreel-ai-agent/test-cases/demoform.html đăng nhập, tạo video, xem kết quả ở bước 2.5 thì cứ ấn tiếp tục không cần xem gì hết, sau khi video làm xong thì qua tab kết quả để thấy video.",
+    "video_name": "testjob",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "Job force killed by user",
+    "created_at": "2026-03-23T08:04:12.472802+00:00",
+    "started_at": "2026-03-23T08:04:12.472802+00:00",
+    "completed_at": "2026-03-23T08:05:13.971434+00:00"
+  },
+  "e89abc8a-bdd7-46e4-b4ba-abbf36c60a73": {
+    "job_id": "e89abc8a-bdd7-46e4-b4ba-abbf36c60a73",
+    "status": "failed",
+    "task": "vào google.com tìm kiếm python và dừng lại khi thấy kết quả",
+    "video_name": "testdocker",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "Chrome not available. Cannot proceed with browser-use.",
+    "created_at": "2026-03-23T08:47:37.982562+00:00",
+    "started_at": "2026-03-23T08:47:37.982796+00:00",
+    "completed_at": "2026-03-23T08:47:37.993084+00:00"
+  },
+  "158ead3b-5d17-4341-8166-a0cd1b51fc6a": {
+    "job_id": "158ead3b-5d17-4341-8166-a0cd1b51fc6a",
+    "status": "failed",
+    "task": "vào google.com tìm kiếm python và dừng lại khi thấy kết quả",
+    "video_name": "testdocker",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "Chrome not available. Cannot proceed with browser-use.",
+    "created_at": "2026-03-23T08:47:45.147843+00:00",
+    "started_at": "2026-03-23T08:47:45.148057+00:00",
+    "completed_at": "2026-03-23T08:47:45.152687+00:00"
+  },
+  "7a977740-c366-4223-a348-c703df437008": {
+    "job_id": "7a977740-c366-4223-a348-c703df437008",
+    "status": "failed",
+    "task": "vào google.com tìm kiếm python và dừng lại khi thấy kết quả",
+    "video_name": "testdocker",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "Chrome not available. Cannot proceed with browser-use.",
+    "created_at": "2026-03-23T08:56:26.126716+00:00",
+    "started_at": "2026-03-23T08:56:26.127008+00:00",
+    "completed_at": "2026-03-23T08:56:26.133936+00:00"
+  },
+  "88f08119-4ca6-4cc8-9339-6403a4310bec": {
+    "job_id": "88f08119-4ca6-4cc8-9339-6403a4310bec",
+    "status": "failed",
+    "task": "vào google.com tìm kiếm python và dừng lại khi thấy kết quả",
+    "video_name": "demobyweb",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "Chrome not available. Cannot proceed with browser-use.",
+    "created_at": "2026-03-23T08:56:37.598888+00:00",
+    "started_at": "2026-03-23T08:56:37.599049+00:00",
+    "completed_at": "2026-03-23T08:56:37.603887+00:00"
+  },
+  "26240a85-244b-4380-b0d4-ba78ab39e235": {
+    "job_id": "26240a85-244b-4380-b0d4-ba78ab39e235",
+    "status": "failed",
+    "task": "vào google.com tìm kiếm python và dừng lại khi thấy kết quả",
+    "video_name": "demobyweb",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "Chrome not available. Cannot proceed with browser-use.",
+    "created_at": "2026-03-23T09:07:20.201415+00:00",
+    "started_at": "2026-03-23T09:07:20.201692+00:00",
+    "completed_at": "2026-03-23T09:07:20.206819+00:00"
+  },
+  "dd34e175-1c78-498f-b546-f7327135d758": {
+    "job_id": "dd34e175-1c78-498f-b546-f7327135d758",
+    "status": "failed",
+    "task": "vào google.com tìm kiếm python và dừng lại khi thấy kết quả",
+    "video_name": "testjob",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "Chrome not available. Cannot proceed with browser-use.",
+    "created_at": "2026-03-23T09:07:42.265284+00:00",
+    "started_at": "2026-03-23T09:07:42.265486+00:00",
+    "completed_at": "2026-03-23T09:07:42.270776+00:00"
+  },
+  "bac5c186-a150-4205-8f8b-cd3b875cb63a": {
+    "job_id": "bac5c186-a150-4205-8f8b-cd3b875cb63a",
+    "status": "failed",
+    "task": "vào google.com tìm kiếm python và dừng lại khi thấy kết quả",
+    "video_name": "testjob",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "Chrome not available. Cannot proceed with browser-use.",
+    "created_at": "2026-03-23T09:10:50.457743+00:00",
+    "started_at": "2026-03-23T09:10:50.457938+00:00",
+    "completed_at": "2026-03-23T09:10:50.466242+00:00"
+  },
+  "20c2a2e7-884e-47df-aa4f-c564a38c45f3": {
+    "job_id": "20c2a2e7-884e-47df-aa4f-c564a38c45f3",
+    "status": "failed",
+    "task": "vào google.com tìm kiếm python và dừng lại khi thấy kết quả",
+    "video_name": "testjob",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "Chrome not available. Cannot proceed with browser-use.",
+    "created_at": "2026-03-23T09:11:47.957349+00:00",
+    "started_at": "2026-03-23T09:11:47.957638+00:00",
+    "completed_at": "2026-03-23T09:11:47.962185+00:00"
+  },
+  "6cbba471-eadb-4fdb-ab40-6a316dda277d": {
+    "job_id": "6cbba471-eadb-4fdb-ab40-6a316dda277d",
+    "status": "cancelled",
+    "task": "vào example.com chờ cho trang load rồi dừng",
+    "video_name": "test",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 1,
+      "phase_name": "Scout",
+      "message": "Phase 1: Browser-use agent running...",
+      "logs": []
+    },
+    "result": null,
+    "error": "Job force killed by user",
+    "created_at": "2026-03-23T09:20:36.196026+00:00",
+    "started_at": "2026-03-23T09:20:36.196026+00:00",
+    "completed_at": "2026-03-23T09:21:21.100933+00:00"
+  },
+  "797a45bd-f744-4893-aa8b-48b35db03872": {
+    "job_id": "797a45bd-f744-4893-aa8b-48b35db03872",
+    "status": "completed",
+    "task": "Vào https://notebooklm.google.com/ và ấn tạo notebook mới và nhập vào python để tạo",
+    "video_name": "test",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 5,
+      "phase_name": "Execution",
+      "message": "Phase 5: Recording video with Webreel...",
+      "logs": []
+    },
+    "result": {
+      "video_path": "output\\test\\.webreel\\raw\\test.mp4",
+      "video_url": "/videos/test/test.mp4",
+      "duration_seconds": null
+    },
+    "error": null,
+    "created_at": "2026-03-24T01:04:55.451753+00:00",
+    "started_at": "2026-03-24T01:04:55.451753+00:00",
+    "completed_at": "2026-03-24T01:05:53.980884+00:00"
+  },
+  "41f50ffb-3445-4913-a216-01f4cdd3edbd": {
+    "job_id": "41f50ffb-3445-4913-a216-01f4cdd3edbd",
+    "status": "completed",
+    "task": "Vào https://notebooklm.google.com/ và ấn tạo notebook mới và nhập vào python để tạo",
+    "video_name": "test",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 5,
+      "phase_name": "Execution",
+      "message": "Phase 5: Recording video with Webreel...",
+      "logs": []
+    },
+    "result": {
+      "video_path": "output\\test\\.webreel\\raw\\test.mp4",
+      "video_url": "/videos/test/test.mp4",
+      "duration_seconds": null
+    },
+    "error": null,
+    "created_at": "2026-03-24T01:06:55.522808+00:00",
+    "started_at": "2026-03-24T01:06:55.522808+00:00",
+    "completed_at": "2026-03-24T01:07:45.900721+00:00"
+  },
+  "6cac4e5a-ee46-44e0-94c2-a1d81b9674fb": {
+    "job_id": "6cac4e5a-ee46-44e0-94c2-a1d81b9674fb",
+    "status": "completed",
+    "task": "Vào https://notebooklm.google.com/ và ấn tạo notebook mới và nhập vào python để tạo",
+    "video_name": "test",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 5,
+      "phase_name": "Execution",
+      "message": "Phase 5: Recording video with Webreel...",
+      "logs": []
+    },
+    "result": {
+      "video_path": "output\\test\\.webreel\\raw\\test.mp4",
+      "video_url": "/videos/test/test.mp4",
+      "duration_seconds": null
+    },
+    "error": null,
+    "created_at": "2026-03-24T01:11:37.323952+00:00",
+    "started_at": "2026-03-24T01:11:37.324952+00:00",
+    "completed_at": "2026-03-24T01:12:35.066064+00:00"
+  },
+  "52425c0e-6ce9-42c9-9a4c-c798f6416e0a": {
+    "job_id": "52425c0e-6ce9-42c9-9a4c-c798f6416e0a",
+    "status": "completed",
+    "task": "Vào https://docs.google.com/presentation/d/1i_YpdBdvYoZ1Ni1eHiQTij1wq8wN2f4Zqcnjq173Po8/edit?slide=id.gd251bb473_0_681#slide=id.gd251bb473_0_681, sử dụng phím tắt ctrl + f5 để trình chiếu, sử dụng phím mủi tên để duy chuyển trình chiếu từng slide cho đến hết, không sử dụng chuột",
+    "video_name": "demoslide",
+    "config": {
+      "enable_tts": true,
+      "tts_voice": "vi-VN-HoaiMyNeural",
+      "tts_engine": "edge",
+      "cdp_url": "http://localhost:9222",
+      "padding_ms": 300,
+      "enable_review": true
+    },
+    "progress": {
+      "current_phase": 5,
+      "phase_name": "Execution",
+      "message": "Phase 5: Recording video with Webreel...",
+      "logs": []
+    },
+    "result": {
+      "video_path": "output\\demoslide\\demoslide.mp4",
+      "video_url": "/videos/demoslide/demoslide.mp4",
+      "duration_seconds": null
+    },
+    "error": null,
+    "created_at": "2026-03-24T03:34:58.994612+00:00",
+    "started_at": "2026-03-24T03:34:58.996134+00:00",
+    "completed_at": "2026-03-24T03:45:18.187784+00:00"
+  }
+}

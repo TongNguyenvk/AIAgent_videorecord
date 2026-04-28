@@ -1,0 +1,27 @@
+services:
+  webreel-backend:
+    build:
+      context: ..
+      dockerfile: webreel-ai-agent/Dockerfile.backend
+    container_name: webreel-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - OUTPUT_DIR=/app/output
+      - PYTHONIOENCODING=utf-8
+      # Use host Chrome CDP (requires Chrome with --remote-allow-origins=*)
+      - CHROME_CDP_URL=http://host.docker.internal:9222
+    volumes:
+      - ./output:/app/output
+      - ./backend/job_queue_state.json:/app/webreel-ai-agent/backend/job_queue_state.json
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G

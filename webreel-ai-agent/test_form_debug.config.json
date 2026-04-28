@@ -1,0 +1,87 @@
+{
+  "$schema": "https://webreel.dev/schema/v1.json",
+  "videos": {
+    "test_form_debug": {
+      "url": "http://127.0.0.1:5500/webreel-ai-agent/test-cases/demoform.html",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "steps": [
+        {
+          "action": "pause",
+          "ms": 2000
+        },
+        {
+          "action": "click",
+          "selector": "#input-username"
+        },
+        {
+          "action": "type",
+          "text": "admin"
+        },
+        {
+          "action": "click",
+          "selector": "#input-password"
+        },
+        {
+          "action": "type",
+          "text": "123456"
+        },
+        {
+          "action": "click",
+          "selector": "#btn-login"
+        },
+        {
+          "action": "pause",
+          "ms": 1500
+        },
+        {
+          "action": "screenshot",
+          "output": "webreel-ai-agent/debug_after_login.png"
+        },
+        {
+          "action": "click",
+          "selector": "#input-fullname"
+        },
+        {
+          "action": "type",
+          "text": "Nguyen Van A"
+        },
+        {
+          "action": "screenshot",
+          "output": "webreel-ai-agent/debug_after_fullname.png"
+        },
+        {
+          "action": "select",
+          "selector": "#select-department",
+          "value": "IT"
+        },
+        {
+          "action": "screenshot",
+          "output": "webreel-ai-agent/debug_after_select.png"
+        },
+        {
+          "action": "click",
+          "selector": "#radio-male"
+        },
+        {
+          "action": "screenshot",
+          "output": "webreel-ai-agent/debug_after_radio.png"
+        },
+        {
+          "action": "click",
+          "selector": "#checkbox-commit"
+        },
+        {
+          "action": "screenshot",
+          "output": "webreel-ai-agent/debug_after_checkbox.png"
+        },
+        {
+          "action": "pause",
+          "ms": 1000
+        }
+      ]
+    }
+  }
+}

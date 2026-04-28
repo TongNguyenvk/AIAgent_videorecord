@@ -1,0 +1,38 @@
+# Desktop App specific ignores
+
+# Virtual environment
+.venv/
+venv/
+
+# Output videos
+output/
+
+# Environment
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Flet
+.flet/
+
+# Logs
+*.log
+
+# Node modules (webreel)
+webreel/node_modules/
+webreel/.turbo/
+
+# OS
+.DS_Store
+Thumbs.db

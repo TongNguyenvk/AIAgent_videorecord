@@ -1,0 +1,105 @@
+{
+  "$schema": "https://webreel.dev/schema/v1.json",
+  "videos": {
+    "test_form_working": {
+      "url": "http://127.0.0.1:5500/webreel-ai-agent/test-cases/demoform.html",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "steps": [
+        {
+          "action": "pause",
+          "ms": 2000,
+          "description": "Wait for page load"
+        },
+        {
+          "action": "click",
+          "selector": "#input-username"
+        },
+        {
+          "action": "type",
+          "text": "admin"
+        },
+        {
+          "action": "click",
+          "selector": "#input-password"
+        },
+        {
+          "action": "type",
+          "text": "123456"
+        },
+        {
+          "action": "click",
+          "selector": "#btn-login"
+        },
+        {
+          "action": "pause",
+          "ms": 1500
+        },
+        {
+          "action": "click",
+          "selector": "#input-fullname"
+        },
+        {
+          "action": "type",
+          "text": "Nguyen Van A"
+        },
+        {
+          "action": "pause",
+          "ms": 500
+        },
+        {
+          "action": "select",
+          "selector": "#select-department",
+          "value": "IT",
+          "description": "Select IT department"
+        },
+        {
+          "action": "pause",
+          "ms": 500
+        },
+        {
+          "action": "click",
+          "selector": "#radio-male",
+          "description": "Select male"
+        },
+        {
+          "action": "pause",
+          "ms": 500
+        },
+        {
+          "action": "moveTo",
+          "selector": "#checkbox-commit"
+        },
+        {
+          "action": "key",
+          "key": " ",
+          "target": "#checkbox-commit",
+          "label": "✓",
+          "description": "Check commit with space key"
+        },
+        {
+          "action": "pause",
+          "ms": 1000
+        },
+        {
+          "action": "click",
+          "selector": "#btn-next"
+        },
+        {
+          "action": "pause",
+          "ms": 2000
+        },
+        {
+          "action": "click",
+          "selector": "#btn-submit"
+        },
+        {
+          "action": "pause",
+          "ms": 2000
+        }
+      ]
+    }
+  }
+}

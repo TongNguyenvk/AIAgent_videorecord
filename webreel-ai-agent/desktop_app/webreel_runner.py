@@ -21,11 +21,69 @@ logger.info(f"[WEBREEL_RUNNER] Loaded from: {__file__}")
 
 # Desktop app paths
 DESKTOP_APP_DIR = Path(__file__).parent
-OUTPUT_DIR = DESKTOP_APP_DIR / "output"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _resolve_output_dir() -> Path:
+    configured = os.getenv("OUTPUT_DIR")
+    if configured:
+        path = Path(configured)
+    else:
+        docker_output = Path("/app/output")
+        path = docker_output if docker_output.exists() else DESKTOP_APP_DIR / "output"
+
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+OUTPUT_DIR = _resolve_output_dir()
 
 # Read CDP URL from environment variable, fallback to localhost
 CDP_URL = os.getenv("CHROME_CDP_URL", "http://localhost:9222")
+
+
+def verify_sharp() -> bool:
+    """Kiem tra sharp co load duoc khong (can thiet de ve con chuot).
+
+    sharp la native module dung de composite cursor overlay len video.
+    Neu sharp khong load duoc, video se KHONG co con chuot.
+    """
+    # Detect if we are in Docker or local
+    if Path("/app/packages/@webreel/core").exists():
+        core_dir = Path("/app/packages/@webreel/core")
+    else:
+        core_dir = DESKTOP_APP_DIR / "webreel" / "packages" / "@webreel" / "core"
+        
+    test_script = (
+        "try { "
+        "  const sharp = require(require('path').join(process.cwd(), 'node_modules', 'sharp')); "
+        "  sharp({ create: { width: 1, height: 1, channels: 4, "
+        "    background: {r:0,g:0,b:0,alpha:0} } }).png().toBuffer()"
+        "    .then(() => { console.log('SHARP_OK'); process.exit(0); })"
+        "    .catch(e => { console.error('SHARP_RENDER_FAIL:' + e.message); process.exit(1); });"
+        "} catch(e) { "
+        "  console.error('SHARP_LOAD_FAIL:' + e.message); process.exit(1); "
+        "}"
+    )
+    try:
+        result = subprocess.run(
+            ["node", "-e", test_script],
+            capture_output=True, text=True, timeout=15,
+            cwd=str(core_dir),
+        )
+        if result.returncode == 0 and "SHARP_OK" in result.stdout:
+            logger.info("[SHARP] sharp loaded and working OK")
+            return True
+        else:
+            err = result.stderr.strip() or result.stdout.strip()
+            logger.error(f"[SHARP] sharp KHONG hoat dong: {err}")
+            logger.error(
+                "[SHARP] Video se KHONG co con chuot! "
+                "Chay 'npm install' trong desktop_app/webreel de sua."
+            )
+            return False
+    except Exception as e:
+        logger.error(f"[SHARP] Khong the kiem tra sharp: {e}")
+        return False
 
 
 def check_chrome_debug_running(auto_start: bool = True, cdp_url: str = None) -> bool:
@@ -112,6 +170,9 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str, 
     logger.info("Phase 5: webreel Record (with cursor)")
     logger.info("=" * 80)
 
+    # Kiem tra sharp truoc khi ghi hinh
+    verify_sharp()
+
     # Prune non-schema properties before saving to satisfy Webreel's strict JSON validation
     # NOTE: cdpUrl is a VALID schema property, so we keep it
     import copy
@@ -128,9 +189,19 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str, 
         json.dump(clean_config, f, indent=2, ensure_ascii=False)
     logger.info(f"Config saved: {config_path}")
 
-    # Webreel binary (local copy in desktop_app)
+    # Webreel binary: env override > local desktop_app copy > root packages
     DESKTOP_APP_DIR = Path(__file__).resolve().parent
-    WEBREEL_BIN = DESKTOP_APP_DIR / "webreel" / "packages" / "webreel" / "dist" / "index.js"
+    env_bin = os.getenv("WEBREEL_BIN")
+    if env_bin and Path(env_bin).is_file():
+        WEBREEL_BIN = Path(env_bin)
+    else:
+        WEBREEL_BIN = DESKTOP_APP_DIR / "webreel" / "packages" / "webreel" / "dist" / "index.js"
+        if not WEBREEL_BIN.exists():
+            # Docker fallback: root /app/packages/webreel/dist/index.js
+            WEBREEL_BIN = Path("/app/packages/webreel/dist/index.js")
+            
+    if not WEBREEL_BIN.exists():
+        logger.error(f"Webreel CLI not found at any known path")
     REPO_ROOT = DESKTOP_APP_DIR  # Use desktop_app as working directory
 
     # Env variables
@@ -150,6 +221,16 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str, 
             if linux_shell.exists():
                 env["CHROME_HEADLESS_PATH"] = str(linux_shell)
                 logger.info(f"Set CHROME_HEADLESS_PATH={linux_shell}")
+
+    # Xoa output cu truoc khi ghi moi (tranh lay nham file tu lan chay truoc)
+    for old_dir in [config_path.parent / "videos", config_path.parent / ".webreel" / "raw"]:
+        if old_dir.exists():
+            for mp4 in old_dir.glob("*.mp4"):
+                try:
+                    mp4.unlink()
+                    logger.info(f"Xoa output cu: {mp4}")
+                except OSError as e:
+                    logger.warning(f"Khong the xoa {mp4}: {e}")
 
     cmd = f'node "{WEBREEL_BIN}" record {video_name} -c "{config_path.absolute()}" --verbose'
     logger.info(f"Running: {cmd}")
@@ -229,41 +310,45 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str, 
     else:
         logger.info(f"webreel done in {elapsed:.1f}s")
 
-    # Find video output - webreel outputs to different locations depending on version
-    # Priority order:
-    # 1. .webreel/raw/<name>.mp4 (current webreel behavior)
-    # 2. videos/<name>.mp4 (older behavior)
-    # 3. .webreel/videos/<name>.mp4 (even older)
-    # 4. <config_dir>/*.mp4 (fallback, skip _final/_raw files)
-    
-    # Check .webreel/raw/ first (current webreel output location)
-    raw_dir = config_path.parent / ".webreel" / "raw"
-    if raw_dir.exists():
-        for mp4 in raw_dir.glob("*.mp4"):
-            logger.info(f"Video output: {mp4}")
-            return mp4
-    
-    # Check videos/ directory
+    # Tim video output - webreel xuat ra nhieu vi tri
+    # Thu tu uu tien:
+    # 1. videos/<name>.mp4           (video da COMPOSITE, CO cursor overlay)
+    # 2. .webreel/raw/<name>.mp4     (video THO, KHONG co cursor - fallback)
+    # 3. .webreel/videos/<name>.mp4  (phien ban cu)
+    # 4. <config_dir>/*.mp4          (fallback cuoi)
+
+    # Kiem tra videos/ TRUOC (video da composite CO con chuot)
     video_dir = config_path.parent / "videos"
     if video_dir.exists():
         for mp4 in video_dir.glob("*.mp4"):
-            logger.info(f"Video output: {mp4}")
+            logger.info(f"Video output (da composite, CO cursor): {mp4}")
             return mp4
 
-    # Fallback: .webreel/videos/ (older webreel versions)
+    # Fallback: .webreel/raw/ (video tho KHONG co cursor overlay)
+    raw_dir = config_path.parent / ".webreel" / "raw"
+    if raw_dir.exists():
+        for mp4 in raw_dir.glob("*.mp4"):
+            logger.warning(f"Video output (video tho, KHONG co cursor): {mp4}")
+            logger.warning(
+                "Video composite khong tim thay trong videos/. "
+                "Co the sharp bi loi - chay 'npm install' trong desktop_app/webreel."
+            )
+            return mp4
+
+    # Fallback: .webreel/videos/ (phien ban webreel cu)
     webreel_dir = config_path.parent / ".webreel" / "videos"
     if webreel_dir.exists():
         for mp4 in webreel_dir.glob("*.mp4"):
             logger.info(f"Video output: {mp4}")
             return mp4
 
-    # Fallback: search output directory (skip _final/_raw files)
+    # Fallback cuoi: tim trong thu muc config (bo qua file _final/_raw)
     for mp4 in config_path.parent.glob("*.mp4"):
         if "_final" not in mp4.stem and "_raw" not in mp4.stem:
             logger.info(f"Video output: {mp4}")
             return mp4
 
-    logger.error("No .mp4 output found")
+    logger.error("Khong tim thay file .mp4 nao")
     return config_path.parent / f"{video_name}.mp4"
 
 

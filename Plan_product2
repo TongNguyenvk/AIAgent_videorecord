@@ -1,0 +1,214 @@
+# WebReel - Ke Hoach San Pham (Production Plan)
+
+> Thoi gian: 6 tuan (trong 7 tuan con lai cua ky thuc tap)
+> Chi phi van hanh: ~$5-10/thang
+> Nguoi thuc hien: Thuc tap sinh tai Vien RDI
+
+---
+
+## 1. Kien Truc Tong Quan
+
+```mermaid
+graph TD
+    subgraph "Frontend"
+        UI["Web App / Flet Desktop"]
+    end
+
+    subgraph "Linux VPS - $5/thang"
+        API["FastAPI Backend<br/>(DA CO)"]
+        REDIS["Redis (cai tren VPS)"]
+
+        subgraph "Docker Workers - Scale vo han"
+            W_WEB["Web Worker<br/>Quay trang web<br/>(pipeline.py DA CO)"]
+            W_OFFICE["Office Web Worker<br/>Quay bai giang PPTX<br/>(pipeline.py + Office Viewer)"]
+        end
+    end
+
+    subgraph "Windows Worker"
+        W_OS["OS Worker<br/>Demo thao tac Office native<br/>(os_pipeline_main.py DA CO)"]
+    end
+
+    subgraph "External Services (mien phi)"
+        VIEWER["Office Online Viewer<br/>(Microsoft host)"]
+        S3["Cloudflare R2 / AWS S3<br/>(Presigned URL)"]
+    end
+
+    UI -->|"REST + WebSocket"| API
+    API --> REDIS
+    REDIS -->|"web-queue"| W_WEB
+    REDIS -->|"office-queue"| W_OFFICE
+    REDIS -->|"os-queue"| W_OS
+    W_OFFICE -->|"mo file"| VIEWER
+    API -->|"upload file"| S3
+    S3 -->|"presigned URL"| VIEWER
+```
+
+### 3 Duong Chay Song Song
+
+| Duong | Khi nao dung | Pipeline | Chay tren | Scale |
+|---|---|---|---|---|
+| **Web** | User cung cap URL trang web | `pipeline.py` 6 Phase (DA CO) | Linux Docker | Vo han |
+| **Office Web** | User upload file PPTX | `pipeline.py` + Office Viewer (~150 dong moi) | Linux Docker | Vo han |
+| **OS Native** | Can demo thao tac MS Office that | `os_pipeline_main.py` 5 Phase (DA CO) | Windows | 1-3 may |
+
+---
+
+## 2. Nhung Gi Da Co San (~90%)
+
+| Thanh phan | File | Tinh trang |
+|---|---|---|
+| Desktop App (UI) | `app_flet_unified.py` | Hoat dong |
+| Web Pipeline (6 Phase) | `desktop_app/pipeline.py` | Hoat dong |
+| OS Pipeline (5 Phase) | `os_recorder/os_pipeline_main.py` | Hoat dong |
+| Backend API | `backend/main.py` | Hoat dong (chua chuan nhu desktop app) |
+| Video-Audio Sync | `trace_composer.py` + `audio_injector.py` | Hoat dong, da tinh chinh ky |
+| TTS | `tts.py` + `tts_edge.py` | Hoat dong |
+| OS Executor | `os_executor_v2.py` | Hoat dong, drag_mouse + press_hotkey |
+| Planning Agent | `os_planning_agent_v2.py` | Hoat dong |
+| Document Export | `document_renderer.py` | Hoat dong, DOCX + PDF |
+| Docker setup | `Dockerfile` + `docker-compose.yml` | Co san |
+
+### Module KHONG DUOC SUA (da tinh chinh ky)
+
+- `trace_composer.py` - Sync video+audio bang trace timestamp
+- `audio_injector.py` - Inject duration vao `[NARRATION:idx]` pause
+- `bu_to_webreel.py` - Parser history -> Webreel config
+- `webreel_runner.py` - Quan ly Webreel CLI, cursor rendering
+- `os_executor_v2.py` - Mouse/keyboard automation
+- `os_planning_agent_v2.py` - Gemini + UIA + screenshot planning
+- `sync_recorder.py` - FFmpeg gdigrab sync voi execution
+
+---
+
+## 3. Duong Office Web - Flow Chi Tiet
+
+```mermaid
+graph LR
+    A["User upload .pptx"] --> B["Backend luu len<br/>Cloudflare R2"]
+    B --> C["Tao Presigned URL<br/>(het han 1h)"]
+    C --> D["Mo Office Viewer:<br/>view.officeapps.live.com<br/>/op/view.aspx?src=URL"]
+    D --> E["Phase 1: browser-use<br/>dieu huong slide<br/>+ save_narration()"]
+    E --> F["Phase 2-6:<br/>GIU NGUYEN 100%<br/>pipeline hien tai"]
+    F --> G["Video MP4"]
+```
+
+**Diem mau chot:**
+- File upload len **Cloudflare R2 hoac AWS S3** (khong serve truc tiep tu VPS)
+- Tao **Presigned URL** co chu ky, het han 1 gio
+- Microsoft fetch file tu URL nay de render -> **khong can login, khong anti-bot**
+- Phase 2-6 dung lai **`bu_to_webreel` -> `audio_injector` -> Webreel record -> `trace_composer`** khong doi gi
+
+### Rui ro va Phuong an du phong
+
+| Rui ro | Phuong an du phong |
+|---|---|
+| Office Viewer khong render animation | ONLYOFFICE trong Docker (tuong thich PPTX 90-95%) |
+| Office Viewer gioi han kich thuoc file | Nen anh trong PPTX truoc khi upload, chunk upload |
+| Microsoft rate limit IP | Cloudflare R2 CDN dam bao toc do, da IP |
+
+---
+
+## 4. He Thong Message Queue
+
+### Tai sao chon Redis tren VPS (khong dung Cloud)
+
+- **Latency gan = 0** (cung may voi backend)
+- **Chi phi = $0** (da tinh trong VPS $5/thang)
+- **Lam chu cau hinh** (tuong thich pipeline hien tai)
+- **Don gian** (1 lenh `apt install redis-server`)
+- Cloud Redis (Upstash) chi can khi scale Serverless
+
+### Co che dieu phoi Worker
+
+```
+Redis Queues:
+  web-queue     -> Linux Web Workers (Docker, auto-scale)
+  office-queue  -> Linux Office Workers (Docker, auto-scale)
+  os-queue      -> Windows OS Workers (may ban, mini PC)
+
+Worker Loop:
+  while True:
+      job = redis.blpop(queue_name)     # Block doi job
+      result = run_pipeline(job)         # Chay pipeline
+      redis.set(f"result:{job_id}", result)  # Luu ket qua
+      notify_api(job_id, result)         # Thong bao backend
+```
+
+---
+
+## 5. Files Can Tao/Sua (Toan Bo)
+
+### Phase 1: Backend len VPS (Tuan 1-2)
+
+| File | Loai | Dong code | Mo ta |
+|---|---|---|---|
+| `backend/queue.py` | NEW | ~60 | Redis wrapper: push/poll/result |
+| `backend/main.py` | SUA | ~40 sua | Dispatch job qua Redis thay BackgroundTasks |
+| `worker/web_worker.py` | NEW | ~80 | Worker chay trong Docker, poll Redis, goi pipeline.py |
+| `docker-compose.prod.yml` | NEW | ~40 | API + Redis + Web Worker |
+| `.env.production` | NEW | ~10 | Config VPS |
+| **Tong Phase 1** | | **~230** | |
+
+### Phase 2: Office Viewer Mode (Tuan 3-4)
+
+| File | Loai | Dong code | Mo ta |
+|---|---|---|---|
+| `backend/file_server.py` | NEW | ~60 | Upload len R2/S3, tao presigned URL |
+| `desktop_app/pipeline.py` | SUA | ~50 them | Them `phase1_scout_pptx()` + Office Viewer prompt |
+| `backend/main.py` | SUA | ~40 them | Route `POST /upload-pptx` |
+| **Tong Phase 2** | | **~150** | |
+
+### Phase 3: Windows Worker (Tuan 4-5)
+
+| File | Loai | Dong code | Mo ta |
+|---|---|---|---|
+| `worker/os_worker.py` | NEW | ~100 | Poll Redis os-queue, goi os_pipeline_main.py |
+| `worker/idle_detector.py` | NEW | ~50 | Chi nhan job khi user khong dung may |
+| `worker/uploader.py` | NEW | ~50 | Upload ket qua (MP4/DOCX/PDF) ve VPS |
+| **Tong Phase 3** | | **~200** | |
+
+### Tuan 6: Test + Tinh chinh + Bao cao
+
+- Test end-to-end toan bo 3 duong
+- Fix bugs
+- Viet bao cao thuc tap
+- Demo cho Vien RDI
+
+**TONG: ~580 dong code moi, 6 tuan**
+
+---
+
+## 6. Chi Phi Van Hanh
+
+| Hang muc | Chi phi | Ghi chu |
+|---|---|---|
+| VPS Linux (Hetzner/Vultr) | $5/thang | API + Redis + Docker Workers |
+| Cloudflare R2 storage | $0-1/thang | 10GB free, $0.015/GB sau do |
+| Domain + SSL | $0 | Cloudflare free tier |
+| Gemini API | ~$0-5/thang | Free tier 1500 req/ngay |
+| Edge TTS | $0 | Mien phi |
+| **Tong** | **~$5-10/thang** | Scale hang tram Web/Office jobs |
+| Mini PC (tuy chon) | ~1 trieu VND (1 lan) | OS Worker chay 24/7 |
+
+---
+
+## 7. Gia Tri Ky Thuat (Cho Bao Cao Thuc Tap)
+
+1. **Kien truc Microservice bat dong bo** - Tach Frontend/Backend/Worker, giao tiep qua Message Queue
+2. **Dieu phoi da nen tang** (Linux + Windows) qua Redis Queue Names
+3. **Containerization** - Docker hoa toan bo Web/Office pipeline
+4. **CI/CD ready** - docker-compose scale workers theo nhu cau
+5. **Cost optimization** - Chi phi gan $0 cho MVP, scale tuyen tinh
+6. **Bao mat** - Presigned URL het han, khong expose file truc tiep
+7. **Tai su dung code** - 90% code hien tai duoc giu nguyen
+
+---
+
+## 8. Demo Truc Quan
+
+File mo phong luong dieu phoi tac vu:
+```
+docs/task_orchestration_demo.html
+```
+Mo file nay tren trinh duyet de xem animation cac Worker boc viec tu Redis Queue.
+Co the dung trong slide bao cao thuc tap.

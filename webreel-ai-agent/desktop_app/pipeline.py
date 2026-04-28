@@ -107,6 +107,7 @@ def clear_reviewed_script(job_id: str):
 # Desktop app is self-contained
 DESKTOP_APP_DIR = Path(__file__).parent
 sys.path.insert(0, str(DESKTOP_APP_DIR))
+sys.path.insert(0, str(DESKTOP_APP_DIR.parent))  # For shared imports
 
 # Import from local modules (not v3)
 from bu_to_webreel import convert_history_to_config_and_script
@@ -114,7 +115,7 @@ from audio_injector import generate_tts_segments, inject_exact_pauses
 
 # Local modules
 from trace_composer import compose_video_from_trace
-from tts import AudioSegment
+from shared.tts import AudioSegment  # Use shared version
 
 # Local webreel_runner
 from webreel_runner import (
@@ -187,6 +188,7 @@ async def phase1_scout(task: str, cdp_url: str, cancel_event=None) -> dict:
         )
 
     # Browser: connect to existing Chrome instance
+    # Session is managed by Chrome's --user-data-dir (persistent profile)
     browser = Browser(
         cdp_url=cdp_url,
         keep_alive=True,
@@ -197,24 +199,26 @@ async def phase1_scout(task: str, cdp_url: str, cancel_event=None) -> dict:
     # Start browser connection
     await browser.start()
     
-    # Strategy: Instead of creating new tab, navigate existing tab to blank
-    # This ensures browser-use uses the correct tab
+    # Strategy: Reuse existing tab and navigate to blank for clean state
+    # Keep cookies intact for OneDrive authentication
     try:
         all_pages = await browser.get_pages()
         if all_pages:
-            # Use the first page and navigate it to blank
+            # Use the first page
             page = all_pages[0]
+            
+            # Navigate to blank to reset page state (but keep cookies)
             await page.goto('about:blank')
-            logger.info(f"Navigated existing tab to blank (clean state)")
+            logger.info("Navigated to blank page (clean state, cookies preserved)")
         else:
             # No pages exist, create new one
             page = await browser.new_page('about:blank')
-            logger.info(f"Created new clean tab for job")
+            logger.info("Created new clean tab for job")
     except Exception as e:
         logger.warning(f"Failed to prepare clean tab: {e}")
         # Fallback: just create new page
         page = await browser.new_page('about:blank')
-        logger.info(f"Created new tab as fallback")
+        logger.info("Created new tab as fallback")
 
     # Agent prompt
     agent_instructions = (
@@ -224,22 +228,40 @@ async def phase1_scout(task: str, cdp_url: str, cancel_event=None) -> dict:
         "CRITICAL: You MUST write in Vietnamese WITH FULL DIACRITICS (co dau). "
         "Example: 'Chung ta' is WRONG, 'Chúng ta' is CORRECT. "
         "'Bai hoc' is WRONG, 'Bài học' is CORRECT. Always use proper Vietnamese diacritics.\n\n"
-        "NARRATION STYLE RULES:\n"
-        "- Start with a hook: 'Chào mừng các bạn đến với bài học...'\n"
-        "- Use transitional phrases: 'Bây giờ chúng ta sẽ tìm hiểu...', 'Điều đặc biệt là...'\n"
-        "- Explain WHY things matter, not just WHAT they are\n"
-        "- Use analogies and comparisons to make concepts relatable\n"
-        "- End each narration with anticipation: 'Ở slide tiếp theo, chúng ta sẽ khám phá...'\n"
-        "- Keep each narration 2-4 sentences. Do NOT write a wall of text.\n\n"
-        "WORKFLOW:\n"
-        "1. Read the page content carefully\n"
-        "2. Call `save_narration` with your LECTURER-STYLE explanation (NOT a copy of the page text)\n"
-        "3. Then perform the browser action (click next, etc.)\n\n"
-        "LOOP EXIT RULES (MANDATORY): "
-        "When the task is complete (e.g., last page reached, congratulation screen), "
-        "call `save_narration` ONCE for a short closing remark, "
-        "then IMMEDIATELY call the `done` action. "
-        "DO NOT repeat `save_narration` on the same page. DO NOT summarize all slides again."
+        "KEYBOARD SHORTCUTS FOR ONEDRIVE POWERPOINT ONLINE (MANDATORY):\n"
+        "- To start Slide Show: Try Ctrl+F5 first. If it doesn't work, try Shift+Ctrl+F5\n"
+        "- To advance slides: Press ArrowRight key (NOT Space - Space doesn't work reliably)\n"
+        "- To go back: Press ArrowLeft key\n"
+        "- To exit Slide Show: Press Escape key\n"
+        "- NEVER click buttons for presentation controls - ALWAYS use keyboard shortcuts\n"
+        "- Keyboard shortcuts are more reliable than clicking unstable UI elements\n\n"
+        "WORKFLOW FOR PRESENTATIONS:\n"
+        "1. Navigate to the PowerPoint file URL\n"
+        "2. WAIT 15 SECONDS for PowerPoint Online to fully load (MANDATORY - do NOT skip this wait)\n"
+        "3. Close any popup dialogs if they appear (click X or press Escape)\n"
+        "4. WAIT 3 SECONDS after closing dialogs\n"
+        "5. Press Ctrl+F5 to start Slide Show (if it doesn't work, try Shift+Ctrl+F5)\n"
+        "6. WAIT 8 SECONDS for presentation mode to be ready\n"
+        "7. For EACH slide: Call save_narration with 2-3 sentences, then press ArrowRight ONCE\n"
+        "8. WAIT 2 SECONDS after each ArrowRight before narrating next slide\n"
+        "9. After the LAST slide: Press Escape to exit\n"
+        "10. Call done action to finish\n\n"
+        "CRITICAL RULES TO PREVENT ERRORS:\n"
+        "- NEVER click the same button multiple times - click ONCE and wait\n"
+        "- NEVER press ArrowRight multiple times in a row - press ONCE per slide\n"
+        "- ALWAYS wait for page to load before taking action\n"
+        "- If unsure if page loaded, WAIT 5 MORE SECONDS\n"
+        "- DO NOT rush - PowerPoint Online needs time to respond\n\n"
+        "NARRATION STYLE:\n"
+        "- Keep each narration SHORT: 2-3 sentences maximum\n"
+        "- Explain the KEY POINT of the slide, not every detail\n"
+        "- Use Vietnamese with full diacritics\n\n"
+        "LOOP EXIT RULES (CRITICAL):\n"
+        "- After presenting ALL slides and pressing Escape, call done IMMEDIATELY\n"
+        "- DO NOT repeat narrations\n"
+        "- DO NOT go back to previous slides\n"
+        "- DO NOT summarize all slides again at the end\n"
+        "- The task is complete when you have narrated all slides and exited with Escape\n"
     )
 
     agent = Agent(
@@ -248,7 +270,7 @@ async def phase1_scout(task: str, cdp_url: str, cancel_event=None) -> dict:
         browser=browser,
         controller=controller,
         extend_system_message=agent_instructions,
-        max_steps=20,
+        max_steps=30,  # Increased for presentations with multiple slides
     )
 
     logger.info("Running agent...")
@@ -618,7 +640,7 @@ def phase5_execution(
     logger.info("Phase 5: The Execution (Webreel recording)")
     logger.info("=" * 80)
 
-    # Inject CDP URL for Chrome connection
+    # Pass CDP URL directly to Webreel (standard Chrome CDP)
     config["videos"][video_name]["cdpUrl"] = cdp_url
 
     # Record (pass cancel_event for interruptible subprocess)

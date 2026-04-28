@@ -15,6 +15,7 @@ AGENT_DIR = BACKEND_DIR.parent
 sys.path.insert(0, str(AGENT_DIR))
 
 from run_pipeline import run_pipeline_v3
+from backend.output_paths import build_video_url, resolve_output_dir
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ async def execute_pipeline_task(
                 try:
                     import json
                     from pathlib import Path
-                    output_dir = Path(__file__).parent.parent / "output" / video_name
+                    output_dir = resolve_output_dir() / video_name
                     tts_script_path = output_dir / "tts_script.json"
                     if tts_script_path.exists():
                         with open(tts_script_path, "r", encoding="utf-8") as f:
@@ -141,7 +142,7 @@ async def execute_pipeline_task(
         )
         
         # Update job status to completed with result
-        video_url = f"/videos/{video_name}/{video_path.name}"
+        video_url = build_video_url(video_path)
         await update_job_status_func(job_id, {
             "status": "completed",
             "result": {

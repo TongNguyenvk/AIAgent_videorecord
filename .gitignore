@@ -63,5 +63,17 @@ walkthrough*.md
 .vscode/
 .idea/
 
+# Chrome profile (locked files cause git add errors)
+chrome_profile/
+**/chrome_profile/
+browser_profile/
+**/browser_profile/
+
+# Temp and log files
+tmp/
+tmp_logs.txt
+worker_logs*.txt
+build_error*.log
+
 # Docker
 .dockerignore

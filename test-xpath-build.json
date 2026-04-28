@@ -1,0 +1,23 @@
+{
+  "videos": {
+    "test-xpath": {
+      "url": "https://example.com",
+      "viewport": { "width": 1280, "height": 720 },
+      "steps": [
+        { "action": "pause", "ms": 1000 },
+        { 
+          "action": "click", 
+          "selector": "xpath=//h1",
+          "description": "Click h1 using XPath",
+          "delay": 1000 
+        },
+        { 
+          "action": "click", 
+          "selector": "xpath=//a[contains(text(), 'More information')]",
+          "description": "Click link using XPath text",
+          "delay": 1000 
+        }
+      ]
+    }
+  }
+}

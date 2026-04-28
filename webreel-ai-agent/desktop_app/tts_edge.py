@@ -61,9 +61,22 @@ async def _generate_speech_async(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Generate speech
-    communicate = edge_tts.Communicate(text, edge_voice, rate=rate)
-    await communicate.save(str(output_path))
+    # Generate speech with retry logic (same as v3)
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # Recreate Communicate object per attempt to prevent stale websocket
+            communicate = edge_tts.Communicate(text, edge_voice, rate=rate)
+            await communicate.save(str(output_path))
+            break
+        except Exception as e:
+            import random
+            if attempt < max_retries - 1:
+                wait_time = 2 + random.uniform(0, 1)
+                print(f"  [TTS WARN] Edge TTS failed: {e}. Retrying {attempt+1}/{max_retries} in {wait_time:.2f}s...")
+                await asyncio.sleep(wait_time)
+            else:
+                raise e
 
     # Measure duration
     duration = measure_audio_duration_ms(output_path)

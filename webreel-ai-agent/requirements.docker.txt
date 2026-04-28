@@ -1,0 +1,38 @@
+# ============================================================
+# WebReel Backend - Docker/Linux dependencies ONLY
+# (No Windows-only packages: pywin32, pywinauto, pyautogui, etc.)
+# ============================================================
+
+# Core
+python-dotenv>=1.0.0
+requests>=2.31.0
+pydantic>=2.0.0
+psutil>=5.9.0
+
+# FastAPI backend
+fastapi>=0.115.0
+uvicorn>=0.32.0
+python-multipart>=0.0.12
+websockets>=14.0
+
+# Browser automation (CDP-based, connects to Browserless Chrome)
+browser-use>=0.12.0
+playwright>=1.40.0
+
+# Gemini AI (primary LLM)
+google-genai>=1.0.0
+
+# Audio & Media
+edge-tts>=6.1.0
+mutagen>=1.47.0
+
+# Redis queue
+redis>=5.0.0
+
+# Slide pipeline (PPTX/PDF to video)
+python-pptx>=1.0.0
+pdf2image>=1.17.0
+Pillow>=10.0.0
+
+# Graph API Auth
+msal>=1.31.0

@@ -573,6 +573,20 @@ export const KEY_CODES: Record<string, { code: string; keyCode: number }> = {
   ArrowDown: { code: "ArrowDown", keyCode: 40 },
   ArrowLeft: { code: "ArrowLeft", keyCode: 37 },
   ArrowRight: { code: "ArrowRight", keyCode: 39 },
+  // Function keys
+  F1: { code: "F1", keyCode: 112 },
+  F2: { code: "F2", keyCode: 113 },
+  F3: { code: "F3", keyCode: 114 },
+  F4: { code: "F4", keyCode: 115 },
+  F5: { code: "F5", keyCode: 116 },
+  F6: { code: "F6", keyCode: 117 },
+  F7: { code: "F7", keyCode: 118 },
+  F8: { code: "F8", keyCode: 119 },
+  F9: { code: "F9", keyCode: 120 },
+  F10: { code: "F10", keyCode: 121 },
+  F11: { code: "F11", keyCode: 122 },
+  F12: { code: "F12", keyCode: 123 },
+  // Letter keys
   a: { code: "KeyA", keyCode: 65 },
   b: { code: "KeyB", keyCode: 66 },
   c: { code: "KeyC", keyCode: 67 },
@@ -641,10 +655,16 @@ export async function pressKey(
   for (const m of modifiers) displayParts.push(modLabel(m));
   displayParts.push(label ?? mainKey);
 
-  if (ctx.isRecording) {
-    getTimeline(ctx).showHud(displayParts);
-  } else {
-    await showKeys(client, displayParts);
+  // Don't show HUD for simple navigation keys (ArrowRight, Escape, etc.)
+  const isNavigationKey = ["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown", "Escape", "Esc"].includes(mainKey);
+  const shouldShowHud = modifiers.length > 0 && !isNavigationKey;
+
+  if (shouldShowHud) {
+    if (ctx.isRecording) {
+      getTimeline(ctx).showHud(displayParts);
+    } else {
+      await showKeys(client, displayParts);
+    }
   }
   ctx.markEvent("key");
 
@@ -684,11 +704,41 @@ export async function pressKey(
     });
   }
 
+  // WORKAROUND FOR POWERPOINT ONLINE: Dispatch synthetic JS events for Space
+  // PowerPoint Online doesn't reliably receive CDP keyboard events in presentation mode
+  if (mainKey === " " || mainKey === "Space" || mainKey === "space") {
+    await client.Runtime.evaluate({
+      expression: `(() => {
+        const active = document.activeElement || document.body;
+        if (active) {
+          active.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', code: 'Space', keyCode: 32, bubbles: true, cancelable: true }));
+          active.dispatchEvent(new KeyboardEvent('keypress', { key: ' ', code: 'Space', keyCode: 32, bubbles: true, cancelable: true }));
+          active.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', code: 'Space', keyCode: 32, bubbles: true, cancelable: true }));
+        }
+      })()`,
+    });
+  }
+
+  // WORKAROUND FOR POWERPOINT ONLINE: Dispatch synthetic JS events for Escape
+  if (mainKey === "Escape" || mainKey === "escape" || mainKey === "Esc") {
+    await client.Runtime.evaluate({
+      expression: `(() => {
+        const active = document.activeElement || document.body;
+        if (active) {
+          active.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+          active.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+        }
+      })()`,
+    });
+  }
+
   await pause(800);
-  if (ctx.isRecording) {
-    getTimeline(ctx).hideHud();
-  } else {
-    await hideKeys(client);
+  if (shouldShowHud) {
+    if (ctx.isRecording) {
+      getTimeline(ctx).hideHud();
+    } else {
+      await hideKeys(client);
+    }
   }
 }
 

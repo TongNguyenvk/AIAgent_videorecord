@@ -1,0 +1,9 @@
+@echo off
+echo Restarting Streamlit...
+taskkill /F /IM streamlit.exe 2>nul
+timeout /t 2 /nobreak >nul
+echo Starting Streamlit...
+start cmd /k ".venv\Scripts\python.exe -m streamlit run src/app.py"
+echo Streamlit restarted! Opening browser...
+timeout /t 3 /nobreak >nul
+start http://localhost:8501

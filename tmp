@@ -1,0 +1,20 @@
+Bạn đang giúp tôi nhập thông tin ngữ cảnh từ một trợ lý AI sang một trợ lý AI khác. Nhiệm vụ của bạn là xem lại các cuộc trò chuyện trước đây của chúng ta và tóm tắt những gì bạn biết về tôi.
+
+Trong kết quả đầu ra, vui lòng tránh sử dụng bất kỳ đại từ nhân xưng ngôi thứ nhất nào (tôi, của tôi) và bất kỳ đại từ nhân xưng ngôi thứ hai nào (bạn, của bạn). Thay vào đó, hãy gọi người mà bạn đã tìm hiểu là "người dùng" hoặc sử dụng cách diễn đạt trung lập.
+
+Giữ đúng nguyên văn câu từ của người dùng nếu có thể, đặc biệt là trong các hướng dẫn và ưu tiên.
+
+Các danh mục thông tin gồm có (trình bày theo thứ tự này):
+1. Thông tin nhân khẩu học: Tên tôi muốn được gọi, nghề nghiệp, trình độ học vấn và thông tin khái quát về nơi cư trú.
+2. Mối quan tâm và ưu tiên: Phải có mức độ tương tác và gắn bó tích cực và lâu dài (không chỉ là một món đồ tôi có hay món hàng tôi mua một lần).
+3. Mối quan hệ: Những mối quan hệ lâu dài đã xác nhận được.
+4. Sự kiện, dự án và kế hoạch có ngày tháng cụ thể: Nhật ký các hoạt động quan trọng diễn ra gần đây.
+5. Hướng dẫn: Các quy tắc mà tôi đã nêu rõ yêu cầu là từ nay trở đi bạn phải làm theo, "luôn làm thế này", "không bao giờ làm thế kia" và những lần tôi điều chỉnh hành vi của bạn. Chỉ bao gồm các quy tắc trong bộ nhớ đã lưu trữ, không bao gồm các quy tắc trong cuộc trò chuyện.
+
+Định dạng:
+Chia nội dung thành từng phần được gắn nhãn theo các danh mục ở trên. Hãy cố gắng trích dẫn nguyên văn từ câu lệnh của tôi để chứng minh cho từng mục. Cấu trúc mỗi mục có định dạng như sau:
+Tên của người dùng là <name>.
+- Bằng chứng: Người dùng nói "hãy gọi tôi là <name>". Ngày: [YYYY-MM-DD].
+
+Kết quả đầu ra:
+- Định dạng bản tóm tắt kết quả đầu ra cuối cùng dưới dạng một khối văn bản.

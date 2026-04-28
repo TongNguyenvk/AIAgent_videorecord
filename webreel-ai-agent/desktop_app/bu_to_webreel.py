@@ -222,10 +222,19 @@ def convert_history_to_config_and_script(
                     "url": url,
                     "description": f"Navigate to {url}"
                 })
+                
+                # CRITICAL: OneDrive/Outlook URLs need 15 seconds to fully load PowerPoint Online
+                # Regular pages only need 3 seconds
+                is_onedrive_url = any(domain in url.lower() for domain in [
+                    "onedrive.live.com", "outlook.live.com", "office.live.com",
+                    "1drv.ms", "sharepoint.com"
+                ])
+                wait_ms = 15000 if is_onedrive_url else 3000
+                
                 steps.append({
                     "action": "pause",
-                    "ms": 3000,
-                    "description": "Wait for page to load"
+                    "ms": wait_ms,
+                    "description": f"Wait for page to load ({'OneDrive - 15s' if is_onedrive_url else '3s'})"
                 })
             elif url == start_url:
                 navigated_to_start = True
@@ -233,8 +242,128 @@ def convert_history_to_config_and_script(
         # ===== CLICK =====
         elif "click" in action_item:
             selector = _extract_selector_from_element(element_str)
-            if selector is not None:  # Explicit None check (skip if no usable selector)
-                element_text = _extract_text_from_element(element_str)
+            element_text = _extract_text_from_element(element_str)
+            
+            # CRITICAL: Detect presentation-related clicks and convert to keyboard shortcuts
+            # This prevents selector instability issues with PowerPoint Online buttons
+            is_presentation_button = False
+            if element_text:
+                presentation_keywords = [
+                    "slide show", "trình chiếu", "present", "slideshow",
+                    "start presenting", "bắt đầu trình chiếu",
+                    "next", "tiếp theo", "previous", "trước",
+                    "exit", "thoát", "end show", "kết thúc"
+                ]
+                text_lower = element_text.lower()
+                is_presentation_button = any(keyword in text_lower for keyword in presentation_keywords)
+            
+            # Also check selector for presentation-related IDs
+            if not is_presentation_button and selector:
+                selector_str = str(selector).lower()
+                presentation_ids = [
+                    "slideshow", "startslideshow", "nextslide", "previousslide",
+                    "exitslideshow", "presentationmode"
+                ]
+                is_presentation_button = any(pid in selector_str for pid in presentation_ids)
+            
+            if is_presentation_button:
+                # Convert presentation button clicks to keyboard shortcuts
+                # OneDrive PowerPoint Online uses Shift+Ctrl+F5 to start slide show
+                logger.info(f"[V3 Parser] Converting presentation button to keyboard shortcut: {element_text}")
+                
+                # Determine which key to use based on button text
+                if element_text:
+                    text_lower = element_text.lower()
+                    if "start" in text_lower or "bắt đầu" in text_lower or "slide show" in text_lower or "trình chiếu" in text_lower or "trình bày" in text_lower:
+                        # Start Slide Show -> Ctrl+F5 (OneDrive PowerPoint Online)
+                        # CRITICAL: Must wait 8 seconds for presentation mode to be ready
+                        steps.append({
+                            "action": "pause",
+                            "ms": 2000,
+                            "description": "Wait before starting slide show"
+                        })
+                        steps.append({
+                            "action": "key",
+                            "key": "Control+F5",
+                            "description": "Press Ctrl+F5 to start Slide Show"
+                        })
+                        steps.append({
+                            "action": "pause",
+                            "ms": 8000,
+                            "description": "Wait 8 seconds for slide show to be ready"
+                        })
+                    elif "next" in text_lower or "tiếp theo" in text_lower:
+                        # Next slide -> ArrowRight (Space doesn't work reliably in PowerPoint Online)
+                        # CRITICAL: Must wait 2 seconds after each slide advance
+                        steps.append({
+                            "action": "key",
+                            "key": "ArrowRight",
+                            "description": "Press ArrowRight to advance slide"
+                        })
+                        steps.append({
+                            "action": "pause",
+                            "ms": 2000,
+                            "description": "Wait 2 seconds after advancing slide"
+                        })
+                    elif "previous" in text_lower or "trước" in text_lower or "back" in text_lower:
+                        # Previous slide -> ArrowLeft
+                        steps.append({
+                            "action": "key",
+                            "key": "ArrowLeft",
+                            "description": "Press ArrowLeft to go back"
+                        })
+                        steps.append({
+                            "action": "pause",
+                            "ms": 1000,
+                            "description": "Wait after going back"
+                        })
+                    elif "exit" in text_lower or "thoát" in text_lower or "end" in text_lower or "kết thúc" in text_lower:
+                        # Exit slide show -> Escape
+                        steps.append({
+                            "action": "key",
+                            "key": "Escape",
+                            "description": "Press Escape to exit slide show"
+                        })
+                        steps.append({
+                            "action": "pause",
+                            "ms": 2000,
+                            "description": "Wait after exiting slide show"
+                        })
+                    else:
+                        # Generic presentation button -> Ctrl+F5 (most common for OneDrive)
+                        steps.append({
+                            "action": "pause",
+                            "ms": 1000,
+                            "description": "Wait before action"
+                        })
+                        steps.append({
+                            "action": "key",
+                            "key": "Control+F5",
+                            "description": f"Press Ctrl+F5 for: {element_text}"
+                        })
+                        steps.append({
+                            "action": "pause",
+                            "ms": 3000,
+                            "description": "Wait after key press"
+                        })
+                else:
+                    # No text, but detected as presentation button -> Ctrl+F5
+                    steps.append({
+                        "action": "pause",
+                        "ms": 1000,
+                        "description": "Wait before starting"
+                    })
+                    steps.append({
+                        "action": "key",
+                        "key": "Control+F5",
+                        "description": "Press Ctrl+F5 to start presentation"
+                    })
+                    steps.append({
+                        "action": "pause",
+                        "ms": 3000,
+                        "description": "Wait for presentation to start"
+                    })
+            elif selector is not None:  # Normal click (not presentation-related)
                 click_desc = f"Click on {element_text}" if element_text else "Click element"
 
                 # Check if this is a checkbox input (type="checkbox")
@@ -395,7 +524,60 @@ def convert_history_to_config_and_script(
             keys_data = action_item["send_keys"]
             keys = keys_data.get("keys", "") if isinstance(keys_data, dict) else str(keys_data)
             if keys:
-                steps.append({"action": "key", "key": keys})
+                # CRITICAL: Detect presentation keyboard shortcuts and add proper wait times
+                keys_lower = keys.lower()
+                
+                # Ctrl+F5 or Shift+Ctrl+F5 -> Start Slide Show (needs 8s wait)
+                if "f5" in keys_lower and ("ctrl" in keys_lower or "control" in keys_lower):
+                    steps.append({
+                        "action": "key",
+                        "key": keys,
+                        "description": "Press Ctrl+F5 to start Slide Show"
+                    })
+                    steps.append({
+                        "action": "pause",
+                        "ms": 8000,
+                        "description": "Wait 8 seconds for slide show to be ready"
+                    })
+                # ArrowRight -> Next slide (needs 2s wait)
+                elif "arrowright" in keys_lower or keys == "ArrowRight":
+                    steps.append({
+                        "action": "key",
+                        "key": "ArrowRight",
+                        "description": "Press ArrowRight to advance slide"
+                    })
+                    steps.append({
+                        "action": "pause",
+                        "ms": 2000,
+                        "description": "Wait 2 seconds after advancing slide"
+                    })
+                # ArrowLeft -> Previous slide (needs 2s wait)
+                elif "arrowleft" in keys_lower or keys == "ArrowLeft":
+                    steps.append({
+                        "action": "key",
+                        "key": "ArrowLeft",
+                        "description": "Press ArrowLeft to go back"
+                    })
+                    steps.append({
+                        "action": "pause",
+                        "ms": 2000,
+                        "description": "Wait 2 seconds after going back"
+                    })
+                # Escape -> Exit slide show (needs 2s wait)
+                elif "escape" in keys_lower or keys == "Escape":
+                    steps.append({
+                        "action": "key",
+                        "key": "Escape",
+                        "description": "Press Escape to exit slide show"
+                    })
+                    steps.append({
+                        "action": "pause",
+                        "ms": 2000,
+                        "description": "Wait after exiting slide show"
+                    })
+                # Other keys -> no special wait
+                else:
+                    steps.append({"action": "key", "key": keys})
 
         # ===== EXTRACT -> scroll to show content =====
         elif "extract" in action_item:
@@ -426,6 +608,7 @@ def convert_history_to_config_and_script(
             }
         },
         "defaultDelay": 300,
+        "fps": 30,
         "steps": steps
     }
     

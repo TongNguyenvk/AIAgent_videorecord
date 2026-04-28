@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebReel - Task Orchestration Demo</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0e1a;
+            --bg-secondary: #111827;
+            --bg-card: #1a2035;
+            --bg-card-hover: #1e2a45;
+            --border: #2a3555;
+            --text-primary: #f0f4ff;
+            --text-secondary: #8b9cc7;
+            --text-muted: #5a6a8a;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --accent-green: #10b981;
+            --accent-orange: #f59e0b;
+            --accent-red: #ef4444;
+            --accent-cyan: #06b6d4;
+            --accent-pink: #ec4899;
+            --glow-blue: rgba(59, 130, 246, 0.15);
+            --glow-green: rgba(16, 185, 129, 0.15);
+            --glow-orange: rgba(245, 158, 11, 0.15);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Background grid */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image:
+                linear-gradient(rgba(59, 130, 246, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(59, 130, 246, 0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+            z-index: 0;
+        }
+
+        .container {
+            position: relative;
+            z-index: 1;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+        .header h1 {
+            font-size: 28px;
+            font-weight: 800;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple), var(--accent-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
+        }
+        .header p {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        /* Controls */
+        .controls {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            margin-bottom: 32px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg-card);
+            color: var(--text-primary);
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--accent-blue);
+            transform: translateY(-1px);
+        }
+        .btn-web { border-color: var(--accent-blue); }
+        .btn-web:hover { box-shadow: 0 0 20px var(--glow-blue); }
+        .btn-office { border-color: var(--accent-green); }
+        .btn-office:hover { box-shadow: 0 0 20px var(--glow-green); }
+        .btn-os { border-color: var(--accent-orange); }
+        .btn-os:hover { box-shadow: 0 0 20px var(--glow-orange); }
+        .btn-auto {
+            border-color: var(--accent-purple);
+            background: linear-gradient(135deg, rgba(139,92,246,0.15), rgba(59,130,246,0.15));
+        }
+
+        /* Architecture layout */
+        .architecture {
+            display: grid;
+            grid-template-columns: 200px 1fr 200px;
+            gap: 24px;
+            align-items: start;
+        }
+
+        /* Section card */
+        .section {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 20px;
+            position: relative;
+        }
+        .section-title {
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-muted);
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .section-title .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        /* Queue area */
+        .queue-area {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .queue-box {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            min-height: 100px;
+            transition: all 0.3s;
+        }
+        .queue-box.active {
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 15px var(--glow-blue);
+        }
+        .queue-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .queue-count {
+            background: var(--bg-card);
+            padding: 2px 8px;
+            border-radius: 8px;
+            font-size: 10px;
+            color: var(--accent-blue);
+        }
+        .queue-items {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        /* Job pill */
+        .job-pill {
+            padding: 6px 10px;
+            border-radius: 8px;
+            font-size: 11px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            animation: slideIn 0.3s ease;
+            transition: all 0.3s;
+        }
+        .job-pill.web { background: rgba(59,130,246,0.15); color: var(--accent-blue); border: 1px solid rgba(59,130,246,0.3); }
+        .job-pill.office { background: rgba(16,185,129,0.15); color: var(--accent-green); border: 1px solid rgba(16,185,129,0.3); }
+        .job-pill.os { background: rgba(245,158,11,0.15); color: var(--accent-orange); border: 1px solid rgba(245,158,11,0.3); }
+        .job-pill .job-id { opacity: 0.6; font-size: 9px; }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-10px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+        @keyframes slideOut {
+            from { opacity: 1; transform: translateX(0); }
+            to { opacity: 0; transform: translateX(10px); }
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Worker cards */
+        .workers-area {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .worker-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            transition: all 0.3s;
+        }
+        .worker-card.busy {
+            border-color: var(--accent-cyan);
+            box-shadow: 0 0 15px rgba(6,182,212,0.15);
+        }
+        .worker-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .worker-name {
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .worker-status {
+            font-size: 10px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-weight: 500;
+        }
+        .worker-status.idle {
+            background: rgba(107,114,128,0.2);
+            color: var(--text-muted);
+        }
+        .worker-status.processing {
+            background: rgba(6,182,212,0.15);
+            color: var(--accent-cyan);
+            animation: pulse 1.5s infinite;
+        }
+        .worker-progress {
+            height: 4px;
+            background: var(--bg-card);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+        .worker-progress-bar {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s ease;
+            width: 0%;
+        }
+        .worker-progress-bar.web { background: linear-gradient(90deg, var(--accent-blue), var(--accent-cyan)); }
+        .worker-progress-bar.office { background: linear-gradient(90deg, var(--accent-green), var(--accent-cyan)); }
+        .worker-progress-bar.os { background: linear-gradient(90deg, var(--accent-orange), var(--accent-red)); }
+        .worker-task {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 6px;
+            min-height: 15px;
+        }
+        .worker-platform {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-top: 6px;
+            display: inline-block;
+        }
+        .platform-linux { background: rgba(16,185,129,0.1); color: var(--accent-green); }
+        .platform-windows { background: rgba(59,130,246,0.1); color: var(--accent-blue); }
+
+        /* Center column */
+        .center-col {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        /* Results panel */
+        .results-section {
+            margin-top: 24px;
+        }
+        .results-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 12px;
+            margin-top: 12px;
+        }
+        .result-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            animation: slideIn 0.4s ease;
+        }
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        .result-type {
+            font-size: 10px;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-weight: 600;
+        }
+        .result-type.web { background: rgba(59,130,246,0.15); color: var(--accent-blue); }
+        .result-type.office { background: rgba(16,185,129,0.15); color: var(--accent-green); }
+        .result-type.os { background: rgba(245,158,11,0.15); color: var(--accent-orange); }
+        .result-time { font-size: 10px; color: var(--text-muted); }
+        .result-name { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
+        .result-detail { font-size: 11px; color: var(--text-secondary); }
+
+        /* Stats bar */
+        .stats-bar {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 12px;
+            margin-bottom: 24px;
+        }
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 14px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .stat-label {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Log panel */
+        .log-panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 24px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .log-entry {
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+            padding: 3px 0;
+            border-bottom: 1px solid rgba(42,53,85,0.5);
+            display: flex;
+            gap: 8px;
+        }
+        .log-time { color: var(--text-muted); white-space: nowrap; }
+        .log-msg { color: var(--text-secondary); }
+        .log-msg.info { color: var(--accent-blue); }
+        .log-msg.success { color: var(--accent-green); }
+        .log-msg.warn { color: var(--accent-orange); }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .architecture { grid-template-columns: 1fr; }
+            .stats-bar { grid-template-columns: repeat(3, 1fr); }
+        }
+
+        /* Flow arrows (CSS only) */
+        .flow-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 18px;
+            padding: 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>WebReel Task Orchestration</h1>
+            <p>Mo phong luong dieu phoi tac vu giua Linux Workers va Windows Workers qua Redis Message Queue</p>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats-bar">
+            <div class="stat-card">
+                <div class="stat-value" id="stat-total">0</div>
+                <div class="stat-label">Tong Jobs</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-queue" style="background: linear-gradient(135deg, var(--accent-orange), var(--accent-red)); -webkit-background-clip: text;">0</div>
+                <div class="stat-label">Trong Queue</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-processing" style="background: linear-gradient(135deg, var(--accent-cyan), var(--accent-blue)); -webkit-background-clip: text;">0</div>
+                <div class="stat-label">Dang Xu Ly</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-done" style="background: linear-gradient(135deg, var(--accent-green), var(--accent-cyan)); -webkit-background-clip: text;">0</div>
+                <div class="stat-label">Hoan Thanh</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-cost" style="background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink)); -webkit-background-clip: text;">$0</div>
+                <div class="stat-label">Chi Phi Uoc Tinh</div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <button class="btn btn-web" onclick="submitJob('web')">
+                <span>+</span> Job Web (quay trang web)
+            </button>
+            <button class="btn btn-office" onclick="submitJob('office')">
+                <span>+</span> Job Office (PPTX bai giang)
+            </button>
+            <button class="btn btn-os" onclick="submitJob('os')">
+                <span>+</span> Job OS (demo Office native)
+            </button>
+            <button class="btn btn-auto" onclick="toggleAutoMode()">
+                <span id="auto-icon">&#9654;</span> <span id="auto-label">Auto Demo</span>
+            </button>
+        </div>
+
+        <!-- Architecture -->
+        <div class="architecture">
+            <!-- Left: Queues -->
+            <div class="section">
+                <div class="section-title">
+                    <span class="dot" style="background: var(--accent-red);"></span>
+                    Redis Queues
+                </div>
+                <div class="queue-area">
+                    <div class="queue-box" id="queue-web">
+                        <div class="queue-label">
+                            <span>web-queue</span>
+                            <span class="queue-count" id="queue-web-count">0</span>
+                        </div>
+                        <div class="queue-items" id="queue-web-items"></div>
+                    </div>
+                    <div class="queue-box" id="queue-office">
+                        <div class="queue-label">
+                            <span>office-queue</span>
+                            <span class="queue-count" id="queue-office-count">0</span>
+                        </div>
+                        <div class="queue-items" id="queue-office-items"></div>
+                    </div>
+                    <div class="queue-box" id="queue-os">
+                        <div class="queue-label">
+                            <span>os-queue</span>
+                            <span class="queue-count" id="queue-os-count">0</span>
+                        </div>
+                        <div class="queue-items" id="queue-os-items"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Center: Workers -->
+            <div class="center-col">
+                <div class="section">
+                    <div class="section-title">
+                        <span class="dot" style="background: var(--accent-green);"></span>
+                        Linux Docker Workers (VPS $5/thang)
+                    </div>
+                    <div class="workers-area" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div class="worker-card" id="worker-linux-1">
+                            <div class="worker-header">
+                                <span class="worker-name">Web Worker #1</span>
+                                <span class="worker-status idle" id="worker-linux-1-status">Idle</span>
+                            </div>
+                            <span class="worker-platform platform-linux">Linux / Docker</span>
+                            <div class="worker-task" id="worker-linux-1-task"></div>
+                            <div class="worker-progress"><div class="worker-progress-bar web" id="worker-linux-1-bar"></div></div>
+                        </div>
+                        <div class="worker-card" id="worker-linux-2">
+                            <div class="worker-header">
+                                <span class="worker-name">Web Worker #2</span>
+                                <span class="worker-status idle" id="worker-linux-2-status">Idle</span>
+                            </div>
+                            <span class="worker-platform platform-linux">Linux / Docker</span>
+                            <div class="worker-task" id="worker-linux-2-task"></div>
+                            <div class="worker-progress"><div class="worker-progress-bar web" id="worker-linux-2-bar"></div></div>
+                        </div>
+                        <div class="worker-card" id="worker-linux-3">
+                            <div class="worker-header">
+                                <span class="worker-name">Office Worker #1</span>
+                                <span class="worker-status idle" id="worker-linux-3-status">Idle</span>
+                            </div>
+                            <span class="worker-platform platform-linux">Linux / Docker</span>
+                            <div class="worker-task" id="worker-linux-3-task"></div>
+                            <div class="worker-progress"><div class="worker-progress-bar office" id="worker-linux-3-bar"></div></div>
+                        </div>
+                        <div class="worker-card" id="worker-linux-4">
+                            <div class="worker-header">
+                                <span class="worker-name">Office Worker #2</span>
+                                <span class="worker-status idle" id="worker-linux-4-status">Idle</span>
+                            </div>
+                            <span class="worker-platform platform-linux">Linux / Docker</span>
+                            <div class="worker-task" id="worker-linux-4-task"></div>
+                            <div class="worker-progress"><div class="worker-progress-bar office" id="worker-linux-4-bar"></div></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="section">
+                    <div class="section-title">
+                        <span class="dot" style="background: var(--accent-orange);"></span>
+                        Windows Workers (may ban / mini PC)
+                    </div>
+                    <div class="workers-area" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                        <div class="worker-card" id="worker-win-1">
+                            <div class="worker-header">
+                                <span class="worker-name">OS Worker #1</span>
+                                <span class="worker-status idle" id="worker-win-1-status">Idle</span>
+                            </div>
+                            <span class="worker-platform platform-windows">Windows / Native</span>
+                            <div class="worker-task" id="worker-win-1-task"></div>
+                            <div class="worker-progress"><div class="worker-progress-bar os" id="worker-win-1-bar"></div></div>
+                        </div>
+                        <div class="worker-card" id="worker-win-2">
+                            <div class="worker-header">
+                                <span class="worker-name">OS Worker #2 (Idle Mode)</span>
+                                <span class="worker-status idle" id="worker-win-2-status">Idle</span>
+                            </div>
+                            <span class="worker-platform platform-windows">Windows / Dev Machine</span>
+                            <div class="worker-task" id="worker-win-2-task"></div>
+                            <div class="worker-progress"><div class="worker-progress-bar os" id="worker-win-2-bar"></div></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Results -->
+            <div class="section">
+                <div class="section-title">
+                    <span class="dot" style="background: var(--accent-green);"></span>
+                    Ket Qua
+                </div>
+                <div id="results-list" style="display: flex; flex-direction: column; gap: 8px; max-height: 400px; overflow-y: auto;"></div>
+            </div>
+        </div>
+
+        <!-- Log -->
+        <div class="log-panel">
+            <div class="section-title" style="margin-bottom: 8px;">
+                <span class="dot" style="background: var(--accent-cyan);"></span>
+                System Log
+            </div>
+            <div id="log-entries"></div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let jobCounter = 0;
+        let totalJobs = 0;
+        let completedJobs = 0;
+        let autoMode = false;
+        let autoInterval = null;
+
+        const queues = { web: [], office: [], os: [] };
+
+        const WEB_TASKS = [
+            "Quay tutorial Wikipedia", "Demo trang W3Schools",
+            "Huong dan dang ky tai khoan", "Demo form lien he",
+            "Quay bai hoc CSS Grid", "Tutorial GitHub basics",
+        ];
+        const OFFICE_TASKS = [
+            "Bai giang Chuong 1.pptx", "Slide Toan Cao Cap.pptx",
+            "Bao cao Tai chinh Q4.pptx", "Template Marketing.pptx",
+            "Bai tap Excel nang cao.xlsx", "Slide Vat Ly Dai Cuong.pptx",
+        ];
+        const OS_TASKS = [
+            "Demo tao bang Excel", "Huong dan dinh dang Word",
+            "Tao slide PowerPoint", "Demo PivotTable Excel",
+            "Huong dan Mail Merge", "Demo chart trong Excel",
+        ];
+
+        const workers = {
+            'linux-1': { busy: false, type: 'web', job: null },
+            'linux-2': { busy: false, type: 'web', job: null },
+            'linux-3': { busy: false, type: 'office', job: null },
+            'linux-4': { busy: false, type: 'office', job: null },
+            'win-1':   { busy: false, type: 'os', job: null },
+            'win-2':   { busy: false, type: 'os', job: null },
+        };
+
+        function randomTask(type) {
+            const tasks = type === 'web' ? WEB_TASKS : type === 'office' ? OFFICE_TASKS : OS_TASKS;
+            return tasks[Math.floor(Math.random() * tasks.length)];
+        }
+
+        function log(msg, level = 'info') {
+            const el = document.getElementById('log-entries');
+            const time = new Date().toLocaleTimeString('vi-VN');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<span class="log-time">${time}</span><span class="log-msg ${level}">${msg}</span>`;
+            el.prepend(entry);
+            if (el.children.length > 50) el.removeChild(el.lastChild);
+        }
+
+        function updateStats() {
+            const inQueue = queues.web.length + queues.office.length + queues.os.length;
+            const processing = Object.values(workers).filter(w => w.busy).length;
+
+            document.getElementById('stat-total').textContent = totalJobs;
+            document.getElementById('stat-queue').textContent = inQueue;
+            document.getElementById('stat-processing').textContent = processing;
+            document.getElementById('stat-done').textContent = completedJobs;
+
+            const cost = (completedJobs * 0.001).toFixed(3);
+            document.getElementById('stat-cost').textContent = `$${cost}`;
+        }
+
+        function renderQueue(type) {
+            const container = document.getElementById(`queue-${type}-items`);
+            const countEl = document.getElementById(`queue-${type}-count`);
+            container.innerHTML = '';
+            countEl.textContent = queues[type].length;
+
+            const box = document.getElementById(`queue-${type}`);
+            box.classList.toggle('active', queues[type].length > 0);
+
+            queues[type].forEach(job => {
+                const pill = document.createElement('div');
+                pill.className = `job-pill ${type}`;
+                pill.innerHTML = `<span class="job-id">#${job.id}</span> ${job.task.substring(0, 25)}`;
+                container.appendChild(pill);
+            });
+        }
+
+        function submitJob(type) {
+            jobCounter++;
+            totalJobs++;
+            const job = {
+                id: jobCounter,
+                type: type,
+                task: randomTask(type),
+                submitted: Date.now(),
+            };
+
+            queues[type].push(job);
+            renderQueue(type);
+            updateStats();
+
+            const queueName = type === 'web' ? 'web-queue' : type === 'office' ? 'office-queue' : 'os-queue';
+            log(`RPUSH ${queueName} Job #${job.id}: "${job.task}"`, 'info');
+
+            tryAssignJobs();
+        }
+
+        function tryAssignJobs() {
+            for (const [wId, worker] of Object.entries(workers)) {
+                if (worker.busy) continue;
+
+                const type = worker.type;
+                if (queues[type].length === 0) continue;
+
+                const job = queues[type].shift();
+                renderQueue(type);
+
+                worker.busy = true;
+                worker.job = job;
+
+                const card = document.getElementById(`worker-${wId}`);
+                const status = document.getElementById(`worker-${wId}-status`);
+                const task = document.getElementById(`worker-${wId}-task`);
+                const bar = document.getElementById(`worker-${wId}-bar`);
+
+                card.classList.add('busy');
+                status.textContent = 'Processing';
+                status.className = 'worker-status processing';
+                task.textContent = `#${job.id}: ${job.task}`;
+                bar.style.width = '0%';
+
+                const platform = wId.startsWith('linux') ? 'Linux' : 'Windows';
+                log(`Worker ${wId} (${platform}) nhan Job #${job.id}: "${job.task}"`, 'warn');
+
+                simulateProgress(wId, job);
+                updateStats();
+            }
+        }
+
+        function simulateProgress(wId, job) {
+            const bar = document.getElementById(`worker-${wId}-bar`);
+            const duration = job.type === 'os' ? 8000 : job.type === 'office' ? 5000 : 4000;
+            const steps = 20;
+            const stepTime = duration / steps;
+            let progress = 0;
+
+            const phases = job.type === 'os'
+                ? ['Planning...', 'TTS...', 'Recording...', 'Mixing...', 'DOCX/PDF...']
+                : ['Scout...', 'Parse...', 'TTS...', 'Inject...', 'Record...', 'Compose...'];
+
+            const interval = setInterval(() => {
+                progress += 100 / steps;
+                bar.style.width = Math.min(progress, 100) + '%';
+
+                const phaseIdx = Math.floor((progress / 100) * phases.length);
+                const task = document.getElementById(`worker-${wId}-task`);
+                if (phaseIdx < phases.length) {
+                    task.textContent = `#${job.id}: ${phases[phaseIdx]}`;
+                }
+
+                if (progress >= 100) {
+                    clearInterval(interval);
+                    completeJob(wId, job);
+                }
+            }, stepTime);
+        }
+
+        function completeJob(wId, job) {
+            const worker = workers[wId];
+            worker.busy = false;
+            worker.job = null;
+
+            const card = document.getElementById(`worker-${wId}`);
+            const status = document.getElementById(`worker-${wId}-status`);
+            const task = document.getElementById(`worker-${wId}-task`);
+            const bar = document.getElementById(`worker-${wId}-bar`);
+
+            card.classList.remove('busy');
+            status.textContent = 'Idle';
+            status.className = 'worker-status idle';
+            task.textContent = '';
+            bar.style.width = '0%';
+
+            completedJobs++;
+
+            const resultList = document.getElementById('results-list');
+            const resultCard = document.createElement('div');
+            resultCard.className = 'result-card';
+            const elapsed = ((Date.now() - job.submitted) / 1000).toFixed(1);
+            resultCard.innerHTML = `
+                <div class="result-header">
+                    <span class="result-type ${job.type}">${job.type.toUpperCase()}</span>
+                    <span class="result-time">${elapsed}s</span>
+                </div>
+                <div class="result-name">#${job.id}: ${job.task}</div>
+                <div class="result-detail">video_${job.id}.mp4 (${job.type === 'os' ? '+ DOCX' : 'ready'})</div>
+            `;
+            resultList.prepend(resultCard);
+            if (resultList.children.length > 10) resultList.removeChild(resultList.lastChild);
+
+            const platform = wId.startsWith('linux') ? 'Linux' : 'Windows';
+            log(`Job #${job.id} HOAN THANH boi ${wId} (${platform}) trong ${elapsed}s`, 'success');
+
+            updateStats();
+            tryAssignJobs();
+        }
+
+        function toggleAutoMode() {
+            autoMode = !autoMode;
+            document.getElementById('auto-icon').textContent = autoMode ? '\u23F8' : '\u25B6';
+            document.getElementById('auto-label').textContent = autoMode ? 'Dang Chay...' : 'Auto Demo';
+
+            if (autoMode) {
+                autoInterval = setInterval(() => {
+                    const types = ['web', 'web', 'web', 'office', 'office', 'os'];
+                    const type = types[Math.floor(Math.random() * types.length)];
+                    submitJob(type);
+                }, 1500);
+                log('Auto Demo BAT DAU - tu dong gui job moi 1.5 giay', 'warn');
+            } else {
+                clearInterval(autoInterval);
+                log('Auto Demo DUNG', 'info');
+            }
+        }
+
+        // Poll for assignment
+        setInterval(tryAssignJobs, 500);
+
+        log('He thong WebReel Task Orchestration da san sang', 'success');
+        log('Nhan nut "+" de gui job, hoac bat "Auto Demo" de xem mo phong', 'info');
+    </script>
+</body>
+</html>

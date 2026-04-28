@@ -1,0 +1,493 @@
+import { resolve, dirname } from "node:path";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+import { RecordingContext, connectCDP, connectCDPUrl, launchChrome, navigate, waitForSelector, waitForText, injectOverlays, pause, findElementByText, findElementBySelector, clickAt, pressKey, typeText, dragFromTo, moveCursorTo, captureScreenshot, Recorder, InteractionTimeline, compose, ensureFfmpeg, extractThumbnail, moveFileSync, DEFAULT_VIEWPORT_SIZE, buildElementExpression, waitForInteractive, injectType, } from "@webreel/core";
+export function formatStep(i, step) {
+    const desc = "description" in step && step.description ? `: ${step.description}` : "";
+    const formatSelector = (sel) => {
+        if (!sel)
+            return "";
+        if (Array.isArray(sel)) {
+            return sel.length === 1 ? sel[0] : `[${sel.map(s => `"${s}"`).join(' OR ')}]`;
+        }
+        return sel;
+    };
+    switch (step.action) {
+        case "pause":
+            return `[step ${i}] pause ${step.ms}ms${desc}`;
+        case "click":
+            return `[step ${i}] click ${step.text ? `text="${step.text}"` : `selector="${formatSelector(step.selector)}"`}${desc}`;
+        case "key":
+            return `[step ${i}] key "${step.key}"${desc}`;
+        case "type":
+            return `[step ${i}] type "${step.text}"${step.selector ? ` selector="${formatSelector(step.selector)}"` : ""}${desc}`;
+        case "scroll":
+            return `[step ${i}] scroll x=${step.x ?? 0} y=${step.y ?? 0}${desc}`;
+        case "wait":
+            return `[step ${i}] wait ${step.selector ? `selector="${formatSelector(step.selector)}"` : `text="${step.text}"`}${desc}`;
+        case "drag":
+            return `[step ${i}] drag${desc}`;
+        case "moveTo":
+            return `[step ${i}] moveTo ${step.text ? `text="${step.text}"` : `selector="${formatSelector(step.selector)}"`}${desc}`;
+        case "screenshot":
+            return `[step ${i}] screenshot "${step.output}"${desc}`;
+        case "navigate":
+            return `[step ${i}] navigate "${step.url}"${desc}`;
+        case "hover":
+            return `[step ${i}] hover ${step.text ? `text="${step.text}"` : `selector="${formatSelector(step.selector)}"`}${desc}`;
+        case "select":
+            return `[step ${i}] select "${step.selector}" value="${step.value}"${desc}`;
+        case "inject_type":
+            return `[step ${i}] inject_type "${step.text}"${step.selector ? ` selector="${formatSelector(step.selector)}"` : ""}${desc}`;
+        default: {
+            const _exhaustive = step;
+            return `[step ${i}] ${_exhaustive.action}`;
+        }
+    }
+}
+export function resolveKeyTarget(target) {
+    if (typeof target === "string")
+        return target;
+    return target.selector ?? "";
+}
+async function resolveTarget(client, opts, timeoutMs = 5000) {
+    if (!opts.text && !opts.selector) {
+        throw new Error(`resolveTarget requires "text" or "selector"`);
+    }
+    const start = Date.now();
+    let box = null;
+    let matchedSelector;
+    while (Date.now() - start < timeoutMs) {
+        if (opts.text) {
+            box = await findElementByText(client, opts.text, opts.within);
+        }
+        else if (opts.selector) {
+            const selectors = Array.isArray(opts.selector) ? opts.selector : [opts.selector];
+            for (const sel of selectors) {
+                box = await findElementBySelector(client, sel, opts.within);
+                if (box) {
+                    matchedSelector = sel;
+                    break;
+                }
+            }
+        }
+        if (box)
+            break;
+        await new Promise((r) => setTimeout(r, 100));
+    }
+    if (!box) {
+        let target;
+        if (opts.text) {
+            target = `text="${opts.text}"`;
+        }
+        else if (Array.isArray(opts.selector)) {
+            target = `selectors=[${opts.selector.map(s => `"${s}"`).join(', ')}] (tried all, none matched)`;
+        }
+        else {
+            target = `selector="${opts.selector}"`;
+        }
+        const scope = opts.within ? ` within "${opts.within}"` : "";
+        throw new Error(`Element not found: ${target}${scope}`);
+    }
+    return { box, matchedSelector };
+}
+export function resolveUrl(url, baseUrl, configDir) {
+    if (url.startsWith("http") || url.startsWith("file://"))
+        return url;
+    const combined = `${baseUrl}${url}`;
+    if (combined.startsWith("http") || combined.startsWith("file://"))
+        return combined;
+    return pathToFileURL(resolve(configDir, combined)).href;
+}
+export function randomPointInBox(box, spread = 0.25) {
+    const center = 0.5 - spread / 2;
+    return {
+        x: box.x + box.width * (center + Math.random() * spread),
+        y: box.y + box.height * (center + Math.random() * spread),
+    };
+}
+export async function extractThumbnailIfConfigured(config, outputPath) {
+    if (config.thumbnail?.enabled === false)
+        return;
+    const thumbTime = config.thumbnail?.time ?? 0;
+    const thumbPath = outputPath.replace(/\.[^.]+$/, ".png");
+    const ffmpegPath = await ensureFfmpeg();
+    extractThumbnail(ffmpegPath, outputPath, thumbPath, thumbTime);
+    console.log(`Thumbnail: ${thumbPath}`);
+}
+export async function runVideo(config, options) {
+    const shouldRecord = options?.record ?? true;
+    const verbose = options?.verbose ?? false;
+    const saveFrames = options?.frames ?? false;
+    const configDir = options?.configDir ?? process.cwd();
+    console.log(`${shouldRecord ? "Recording" : "Previewing"}: ${config.name}`);
+    const width = config.viewport?.width ?? DEFAULT_VIEWPORT_SIZE;
+    const height = config.viewport?.height ?? DEFAULT_VIEWPORT_SIZE;
+    const zoom = config.zoom ?? 1;
+    const cssWidth = Math.round(width / zoom);
+    const cssHeight = Math.round(height / zoom);
+    const ctx = new RecordingContext();
+    ctx.resetCursorPosition(cssWidth, cssHeight);
+    if (config.clickDwell !== undefined)
+        ctx.setClickDwell(config.clickDwell);
+    const initialCursor = ctx.getCursorPosition();
+    const chrome = await launchChrome({
+        headless: shouldRecord,
+        profile: config.profile,
+        cdpUrl: config.cdpUrl,
+    });
+    let clientRef = null;
+    let recorder = null;
+    try {
+        const client = config.cdpUrl ? await connectCDPUrl(config.cdpUrl) : await connectCDP(chrome.port);
+        clientRef = client;
+        await client.Page.enable();
+        await client.Runtime.enable();
+        await client.Emulation.setDeviceMetricsOverride({
+            width: cssWidth,
+            height: cssHeight,
+            deviceScaleFactor: zoom,
+            mobile: false,
+        });
+        const baseUrl = config.baseUrl ?? "";
+        const url = resolveUrl(config.url, baseUrl, configDir);
+        // Stealth Evasions
+        const stealthScript = `
+      // Overwrite the webdriver property
+      Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+      });
+      // Mock chrome object
+      window.chrome = {
+        runtime: {},
+        // etc
+      };
+      // Pass permissions
+      const originalQuery = window.navigator.permissions.query;
+      window.navigator.permissions.query = (parameters) => (
+        parameters.name === 'notifications' ?
+          Promise.resolve({ state: Notification.permission } as PermissionStatus) :
+          originalQuery(parameters)
+      );
+    `;
+        await client.Page.addScriptToEvaluateOnNewDocument({ source: stealthScript });
+        await navigate(client, url);
+        if (config.waitFor) {
+            if (typeof config.waitFor === "string") {
+                await waitForSelector(client, config.waitFor);
+            }
+            else if (config.waitFor.selector) {
+                await waitForSelector(client, config.waitFor.selector, 30000, config.waitFor.within);
+            }
+            else if (config.waitFor.text) {
+                await waitForText(client, config.waitFor.text, config.waitFor.within);
+            }
+        }
+        await pause(200);
+        let overlayTheme;
+        let cursorSvg;
+        const cursorConfig = config.theme?.cursor;
+        if (config.theme) {
+            overlayTheme = {
+                cursorSize: cursorConfig?.size,
+                cursorHotspot: cursorConfig?.hotspot,
+                hud: config.theme.hud,
+            };
+            if (cursorConfig?.image) {
+                try {
+                    cursorSvg = readFileSync(resolve(configDir, cursorConfig.image), "utf-8");
+                    overlayTheme.cursorSvg = cursorSvg;
+                }
+                catch {
+                    throw new Error(`Failed to read cursor SVG: ${resolve(configDir, cursorConfig.image)}`);
+                }
+            }
+        }
+        let timeline = null;
+        const outputPath = config.output ?? resolve(configDir, "videos", `${config.name}.mp4`);
+        if (shouldRecord) {
+            ctx.setMode("record");
+            timeline = new InteractionTimeline(width, height, {
+                zoom,
+                fps: config.fps,
+                initialCursor,
+                cursorSvg,
+                cursorSize: cursorConfig?.size,
+                cursorHotspot: cursorConfig?.hotspot,
+                hud: config.theme?.hud,
+            });
+            ctx.setTimeline(timeline);
+            const crf = config.quality !== undefined
+                ? Math.round(51 * (1 - config.quality / 100))
+                : undefined;
+            const framesDir = saveFrames
+                ? resolve(configDir, ".webreel", "frames", config.name)
+                : undefined;
+            recorder = new Recorder(width, height, {
+                fps: config.fps,
+                crf,
+                framesDir,
+                sfx: config.sfx,
+            });
+            recorder.setTimeline(timeline);
+            await pause(800);
+            await recorder.start(client, outputPath, ctx);
+        }
+        else {
+            ctx.setMode("preview");
+            ctx.setTimeline(null);
+            await injectOverlays(client, overlayTheme, initialCursor);
+        }
+        await pause(500);
+        // Execution trace: record the real wall-clock time of every step
+        const executionTrace = [];
+        const recordingStartTime = Date.now();
+        for (let i = 0; i < config.steps.length; i++) {
+            const step = config.steps[i];
+            if (verbose)
+                console.log(formatStep(i, step));
+            const stepStartMs = Date.now() - recordingStartTime;
+            try {
+                switch (step.action) {
+                    case "pause":
+                        await pause(step.ms);
+                        break;
+                    case "click": {
+                        const { box } = await resolveTarget(client, step);
+                        await waitForInteractive(client, box);
+                        const { x: cx, y: cy } = randomPointInBox(box);
+                        await clickAt(ctx, client, cx, cy, step.modifiers);
+                        break;
+                    }
+                    case "key": {
+                        if (step.target) {
+                            const sel = resolveKeyTarget(step.target);
+                            if (sel) {
+                                const { matchedSelector } = await resolveTarget(client, { selector: sel });
+                                const expr = buildElementExpression(matchedSelector || (Array.isArray(sel) ? sel[0] : sel));
+                                await client.Runtime.evaluate({
+                                    expression: `${expr}?.focus()`,
+                                });
+                                await pause(100);
+                            }
+                        }
+                        await pressKey(ctx, client, step.key, step.label);
+                        break;
+                    }
+                    case "drag": {
+                        const { box: fromBox } = await resolveTarget(client, step.from);
+                        const { box: toBox } = await resolveTarget(client, step.to);
+                        await dragFromTo(ctx, client, fromBox, toBox);
+                        break;
+                    }
+                    case "type": {
+                        if (step.selector) {
+                            const { box, matchedSelector } = await resolveTarget(client, { selector: step.selector, within: step.within });
+                            await waitForInteractive(client, box);
+                            const { x: tx, y: ty } = randomPointInBox(box);
+                            await clickAt(ctx, client, tx, ty);
+                            const expr = buildElementExpression(matchedSelector || (Array.isArray(step.selector) ? step.selector[0] : step.selector), step.within);
+                            await client.Runtime.evaluate({
+                                expression: `(() => {
+                  const el = ${expr};
+                  if (el) {
+                    el.focus();
+                    el.dispatchEvent(new Event('focus', { bubbles: true }));
+                  }
+                })()`,
+                            });
+                            await pause(100 + Math.random() * 50); // Small realistic delay before typing
+                        }
+                        await typeText(ctx, client, step.text, step.charDelay);
+                        break;
+                    }
+                    case "scroll": {
+                        const scrollX = step.x ?? 0;
+                        const scrollY = step.y ?? 0;
+                        if (step.selector) {
+                            const { matchedSelector } = await resolveTarget(client, { selector: step.selector, within: step.within });
+                            const expr = buildElementExpression(matchedSelector || (Array.isArray(step.selector) ? step.selector[0] : step.selector), step.within);
+                            await client.Runtime.evaluate({
+                                expression: `(() => {
+                  const target = ${expr};
+                  if (target) target.scrollBy({ left: ${scrollX}, top: ${scrollY}, behavior: "smooth" });
+                })()`,
+                            });
+                        }
+                        else if (step.text) {
+                            const { box } = await resolveTarget(client, step);
+                            await client.Runtime.evaluate({
+                                expression: `(() => {
+                  const el = document.elementFromPoint(${Math.round(box.x + box.width / 2)}, ${Math.round(box.y + box.height / 2)});
+                  if (el) el.scrollBy({ left: ${scrollX}, top: ${scrollY}, behavior: "smooth" });
+                })()`,
+                            });
+                        }
+                        else {
+                            await client.Runtime.evaluate({
+                                expression: `window.scrollBy({ left: ${scrollX}, top: ${scrollY}, behavior: "smooth" })`,
+                            });
+                        }
+                        await pause(500);
+                        break;
+                    }
+                    case "wait": {
+                        if (step.selector) {
+                            await waitForSelector(client, step.selector, step.timeout, step.within);
+                        }
+                        else if (step.text) {
+                            await waitForText(client, step.text, step.within, step.timeout);
+                        }
+                        break;
+                    }
+                    case "screenshot": {
+                        await captureScreenshot(client, resolve(configDir, step.output));
+                        break;
+                    }
+                    case "moveTo": {
+                        const { box } = await resolveTarget(client, step);
+                        const { x: mx, y: my } = randomPointInBox(box, 0.1);
+                        await moveCursorTo(ctx, client, mx, my);
+                        break;
+                    }
+                    case "navigate": {
+                        const navUrl = resolveUrl(step.url, config.baseUrl ?? "", configDir);
+                        await navigate(client, navUrl);
+                        break;
+                    }
+                    case "hover": {
+                        const { box } = await resolveTarget(client, step);
+                        const { x: hx, y: hy } = randomPointInBox(box, 0.1);
+                        await moveCursorTo(ctx, client, hx, hy);
+                        await client.Input.dispatchMouseEvent({
+                            type: "mouseMoved",
+                            x: hx,
+                            y: hy,
+                        });
+                        break;
+                    }
+                    case "select": {
+                        if (step.selector) {
+                            const { matchedSelector } = await resolveTarget(client, { selector: step.selector, within: step.within });
+                            const expr = buildElementExpression(matchedSelector || (Array.isArray(step.selector) ? step.selector[0] : step.selector), step.within);
+                            await client.Runtime.evaluate({
+                                expression: `(() => {
+                  const el = ${expr};
+                  if (!el) throw new Error("Element not found: " + ${JSON.stringify(step.selector)});
+                  el.value = ${JSON.stringify(step.value)};
+                  el.dispatchEvent(new Event("input", { bubbles: true }));
+                  el.dispatchEvent(new Event("change", { bubbles: true }));
+                })()`,
+                            });
+                        }
+                        else if (step.text) {
+                            const { box } = await resolveTarget(client, step);
+                            await client.Runtime.evaluate({
+                                expression: `(() => {
+                  const el = document.elementFromPoint(${Math.round(box.x + box.width / 2)}, ${Math.round(box.y + box.height / 2)});
+                  if (!el) throw new Error("Element not found by text: " + ${JSON.stringify(step.text)});
+                  el.value = ${JSON.stringify(step.value)};
+                  el.dispatchEvent(new Event("input", { bubbles: true }));
+                  el.dispatchEvent(new Event("change", { bubbles: true }));
+                })()`,
+                            });
+                        }
+                        else {
+                            throw new Error(`select step requires "selector" or "text"`);
+                        }
+                        break;
+                    }
+                    case "inject_type": {
+                        await injectType(ctx, client, step.text, step.selector, step.within);
+                        break;
+                    }
+                }
+                const stepDelay = "delay" in step ? step.delay : undefined;
+                const postDelay = stepDelay ?? config.defaultDelay;
+                if (postDelay !== undefined && postDelay > 0) {
+                    await pause(postDelay);
+                }
+                // Record step timing in execution trace
+                const stepEndMs = Date.now() - recordingStartTime;
+                executionTrace.push({
+                    step_index: i,
+                    action_type: step.action,
+                    description: "description" in step ? step.description : undefined,
+                    start_time_ms: stepStartMs,
+                    end_time_ms: stepEndMs,
+                });
+            }
+            catch (err) {
+                // Still record failed steps in trace
+                const stepEndMs = Date.now() - recordingStartTime;
+                executionTrace.push({
+                    step_index: i,
+                    action_type: step.action,
+                    description: "description" in step ? step.description : undefined,
+                    start_time_ms: stepStartMs,
+                    end_time_ms: stepEndMs,
+                });
+                throw new Error(`Step ${i} (${step.action}) failed at ${url}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
+            }
+        }
+        // Save execution trace
+        {
+            const traceDir = resolve(configDir, ".webreel", "traces");
+            mkdirSync(traceDir, { recursive: true });
+            writeFileSync(resolve(traceDir, `${config.name}.trace.json`), JSON.stringify(executionTrace, null, 2));
+            console.log(`Execution trace: ${resolve(traceDir, `${config.name}.trace.json`)}`);
+        }
+        if (recorder) {
+            const cleanVideoPath = recorder.getTempVideoPath();
+            await recorder.stop();
+            recorder = null;
+            if (timeline) {
+                const timelineData = timeline.toJSON();
+                const metadataDir = resolve(configDir, ".webreel", "timelines");
+                mkdirSync(metadataDir, { recursive: true });
+                writeFileSync(resolve(metadataDir, `${config.name}.timeline.json`), JSON.stringify(timelineData));
+                const rawDir = resolve(configDir, ".webreel", "raw");
+                mkdirSync(rawDir, { recursive: true });
+                const rawVideoPath = resolve(rawDir, `${config.name}.mp4`);
+                moveFileSync(cleanVideoPath, rawVideoPath);
+                ctx.setMode("preview");
+                ctx.setTimeline(null);
+                mkdirSync(dirname(outputPath), { recursive: true });
+                console.log(`Compositing overlays...`);
+                await compose(rawVideoPath, timelineData, outputPath, { sfx: config.sfx });
+            }
+            await extractThumbnailIfConfigured(config, outputPath);
+            console.log(`Done: ${outputPath}`);
+        }
+        else {
+            console.log(`Preview complete: ${config.name}`);
+        }
+    }
+    finally {
+        if (recorder) {
+            try {
+                await recorder.stop();
+            }
+            catch (err) {
+                console.warn("Failed to stop recorder:", err);
+            }
+        }
+        if (clientRef) {
+            try {
+                await clientRef.close();
+            }
+            catch (err) {
+                console.warn("Failed to close CDP client:", err);
+            }
+        }
+        if (!config.cdpUrl) {
+            try {
+                chrome.kill();
+            }
+            catch (err) {
+                console.warn("Failed to kill Chrome process:", err);
+            }
+        }
+    }
+}
+//# sourceMappingURL=runner.js.map

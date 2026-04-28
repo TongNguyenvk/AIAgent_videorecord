@@ -1,0 +1,59 @@
+{
+  "$schema": "https://webreel.dev/schema/v1.json",
+  "videos": {
+    "test_form_visual": {
+      "url": "http://127.0.0.1:5500/webreel-ai-agent/test-cases/demoform.html",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "steps": [
+        {
+          "action": "pause",
+          "ms": 2000,
+          "description": "Wait for page load"
+        },
+        {
+          "action": "click",
+          "selector": "#input-username",
+          "description": "Focus username"
+        },
+        {
+          "action": "type",
+          "text": "admin"
+        },
+        {
+          "action": "click",
+          "selector": "#input-password",
+          "description": "Focus password"
+        },
+        {
+          "action": "type",
+          "text": "123456"
+        },
+        {
+          "action": "click",
+          "selector": "#btn-login",
+          "description": "Login"
+        },
+        {
+          "action": "pause",
+          "ms": 1500,
+          "description": "Wait for form screen"
+        },
+        {
+          "action": "click",
+          "selector": "#input-fullname",
+          "description": "Focus fullname"
+        },
+        {
+          "action": "type",
+          "text": "Nguyen Van A"
+        },
+        {
+          "action": "pause",
+          "ms": 500
+        },
+        {
+          "action": "click",
+          "selector": "#select-depart

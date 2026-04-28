@@ -1,0 +1,66 @@
+{
+  "videos": {
+    "test_space": {
+      "url": "https://onedrive.live.com/edit.aspx?resid=F0E0A7155C52A83!s169d86f212c14007ae9ae941336b0147",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "theme": {
+        "cursor": {
+          "size": 24,
+          "hotspot": "top-left"
+        }
+      },
+      "defaultDelay": 300,
+      "fps": 30,
+      "steps": [
+        {
+          "action": "pause",
+          "ms": 15000
+        },
+        {
+          "action": "key",
+          "key": "Control+F5"
+        },
+        {
+          "action": "pause",
+          "ms": 8000
+        },
+        {
+          "action": "key",
+          "key": "ArrowRight"
+        },
+        {
+          "action": "pause",
+          "ms": 2000
+        },
+        {
+          "action": "key",
+          "key": "ArrowRight"
+        },
+        {
+          "action": "pause",
+          "ms": 2000
+        },
+        {
+          "action": "key",
+          "key": "ArrowRight"
+        },
+        {
+          "action": "pause",
+          "ms": 2000
+        },
+        {
+          "action": "key",
+          "key": "Escape"
+        },
+        {
+          "action": "pause",
+          "ms": 2000
+        }
+      ],
+      "cdpUrl": "http://localhost:9222"
+    }
+  }
+}

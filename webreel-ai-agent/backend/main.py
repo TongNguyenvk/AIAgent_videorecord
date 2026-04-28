@@ -3,10 +3,11 @@ FastAPI Backend for Webreel Video Generation
 Provides REST API endpoints and WebSocket support for asynchronous video generation.
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import asyncio
 import logging
@@ -27,7 +28,9 @@ from backend.tasks import execute_pipeline_task
 from backend.websocket import manager
 from backend.logging_config import setup_logging
 from backend.middleware import RequestLoggingMiddleware
+from backend.output_paths import build_video_url, resolve_output_dir
 from backend.shutdown import ShutdownHandler
+from backend.queue import JobQueue
 
 # Setup structured logging
 setup_logging()
@@ -40,6 +43,10 @@ job_queue_lock = asyncio.Lock()
 # Track running asyncio tasks for immediate cancellation
 job_tasks: dict[str, asyncio.Task] = {}
 job_tasks_lock = asyncio.Lock()
+
+# Redis queue (production mode)
+redis_queue = JobQueue()
+_result_listener_task: Optional[asyncio.Task] = None
 
 # Initialize shutdown handler
 shutdown_handler = ShutdownHandler(
@@ -58,14 +65,26 @@ async def lifespan(app: FastAPI):
     
     Requirements: 10.1, 10.5
     """
+    global _result_listener_task
+    
     # Startup
     shutdown_handler.register_signal_handlers()
     await shutdown_handler.load_job_queue()
+    
+    # Start Redis result listener (polls worker results in background)
+    _result_listener_task = asyncio.create_task(_listen_for_worker_results())
+    
     logger.info("FastAPI backend started successfully")
+    if redis_queue.redis:
+        logger.info(f"Redis queue connected: {redis_queue.redis_url}")
+    else:
+        logger.info("Redis not available, using direct execution mode only")
     
     yield
     
-    # Shutdown (if needed, though signal handlers handle most cases)
+    # Shutdown
+    if _result_listener_task:
+        _result_listener_task.cancel()
     logger.info("FastAPI backend shutting down")
 
 
@@ -89,9 +108,71 @@ app.add_middleware(
 )
 
 # Static file serving for video downloads
-output_dir = Path(__file__).parent.parent / "output"
-output_dir.mkdir(exist_ok=True)
+output_dir = resolve_output_dir()
+output_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/videos", StaticFiles(directory=str(output_dir)), name="videos")
+
+
+async def _listen_for_worker_results():
+    """Background task that polls Redis for worker results and updates job status.
+    
+    When a worker completes a job, it stores the result in Redis and publishes
+    a notification. This listener picks up those results and updates the
+    in-memory job queue + broadcasts via WebSocket.
+    """
+    import json as _json
+    
+    if not redis_queue.redis:
+        logger.info("Redis not available, result listener disabled")
+        return
+    
+    logger.info("Redis result listener started")
+    
+    try:
+        pubsub = redis_queue.redis.pubsub()
+        pubsub.subscribe("job-updates")
+        
+        while True:
+            message = pubsub.get_message(timeout=2.0)
+            if message and message["type"] == "message":
+                try:
+                    data = _json.loads(message["data"])
+                    job_id = data.get("job_id")
+                    if not job_id:
+                        continue
+                    
+                    # Fetch full result from Redis
+                    result = redis_queue.get_result(job_id)
+                    if not result:
+                        continue
+                    
+                    # Update in-memory job queue
+                    async with job_queue_lock:
+                        if job_id in job_queue:
+                            job_queue[job_id]["status"] = result.get("status", "completed")
+                            job_queue[job_id]["result"] = {
+                                "video_path": result.get("video_path", ""),
+                                "video_url": build_video_url(result["video_path"]) if result.get("video_path") else "",
+                                "duration_seconds": None,
+                            }
+                            if result.get("error"):
+                                job_queue[job_id]["error"] = result["error"]
+                            job_queue[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+                    
+                    # Broadcast to WebSocket clients
+                    await broadcast_progress(job_id)
+                    logger.info(f"Worker result received for Job {job_id}: {result.get('status')}")
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing worker result: {e}")
+            
+            await asyncio.sleep(0.5)
+    
+    except asyncio.CancelledError:
+        logger.info("Redis result listener stopped")
+        pubsub.unsubscribe()
+    except Exception as e:
+        logger.error(f"Result listener error: {e}", exc_info=True)
 
 
 async def update_job_status(job_id: str, updates: dict) -> None:
@@ -500,14 +581,79 @@ async def download_video(job_id: str):
     )
 
 
+@app.post("/api/upload-pptx")
+async def upload_pptx(
+    file: UploadFile,
+    task: str = "Create a lecture video explaining each slide",
+    tts_voice: str = "vi-VN-HoaiMyNeural",
+    tts_engine: str = "edge",
+    padding_ms: int = 500,
+    language: str = "Vietnamese",
+):
+    """Upload a PPTX/PDF file and start the Slide-to-Video pipeline.
+    
+    Flow:
+      1. Receives .pptx or .pdf file
+      2. Saves to output directory
+      3. Submits job to office-queue (Slide pipeline)
+      4. Returns job_id + websocket URL for tracking
+    """
+    if not file.filename or not file.filename.lower().endswith((".pptx", ".ppt", ".pdf")):
+        raise HTTPException(status_code=400, detail="Only .pptx, .ppt, or .pdf files are accepted")
+    
+    # Read file content
+    content = await file.read()
+    if len(content) > 100 * 1024 * 1024:  # 100MB limit
+        raise HTTPException(status_code=400, detail="File too large. Maximum 100MB.")
+    
+    # Generate job ID and video name
+    job_id = str(uuid4())
+    video_name = f"slide_{Path(file.filename).stem}_{job_id[:8]}"
+    
+    # Save file to output directory
+    import os
+    output_dir = resolve_output_dir()
+    upload_dir = output_dir / video_name / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    file_path = upload_dir / file.filename
+    with open(file_path, "wb") as f:
+        f.write(content)
+    
+    logger.info(f"PPTX uploaded: {file.filename} ({len(content)} bytes) -> {file_path}")
+    
+    # Submit to office-queue
+    job_data = {
+        "job_id": job_id,
+        "video_name": video_name,
+        "config": {
+            "pptx_path": str(file_path),
+            "task": task,
+            "tts_voice": tts_voice,
+            "tts_engine": tts_engine,
+            "padding_ms": padding_ms,
+            "language": language,
+        },
+    }
+    
+    redis_queue.push("office-queue", job_data)
+    logger.info(f"Submitted to office-queue: {job_id}")
+    
+    return {
+        "job_id": job_id,
+        "video_name": video_name,
+        "status": "queued",
+        "file_name": file.filename,
+        "file_size": len(content),
+        "ws_url": f"/ws/{job_id}",
+        "result_url": f"/api/queue/result/{job_id}",
+    }
+
+
 @app.get("/health")
 async def health_check():
     """
-    Health check endpoint with job statistics and shutdown status.
-    
-    Returns API status, version, counts of jobs by status, and shutdown flag.
-    
-    Requirements: 1.1
+    Health check endpoint with job statistics, queue stats, and shutdown status.
     """
     async with job_queue_lock:
         job_stats = {
@@ -517,10 +663,15 @@ async def health_check():
             "failed": sum(1 for job in job_queue.values() if job["status"] == "failed"),
         }
     
+    # Redis queue stats
+    queue_stats = redis_queue.get_all_queue_stats() if redis_queue.redis else {}
+    
     return {
         "status": "healthy",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "jobs": job_stats,
+        "queues": queue_stats,
+        "redis_connected": redis_queue.redis is not None,
         "is_shutting_down": shutdown_handler.is_shutting_down,
         "active_tasks": shutdown_handler.active_task_count
     }
@@ -547,6 +698,115 @@ async def reset_shutdown_flag():
         "old_value": old_value,
         "new_value": False
     }
+
+
+# =========================================================================
+# Queue-based endpoints (production mode with Redis workers)
+# =========================================================================
+
+class QueueJobRequest(BaseModel):
+    """Request model for queue-based job submission."""
+    task: str
+    video_name: str = ""
+    job_type: str = "web"  # "web", "office", "os"
+    config: dict = {}
+
+
+@app.post("/api/queue/submit")
+async def submit_queue_job(request: QueueJobRequest):
+    """Submit a job to Redis queue for worker processing.
+    
+    Routes to the correct queue based on job_type:
+      - web -> web-queue (Linux Docker worker)
+      - office -> office-queue (Linux Docker worker)
+      - os -> os-queue (Windows worker)
+    """
+    if not redis_queue.redis:
+        raise HTTPException(status_code=503, detail="Redis not available. Use /api/jobs for direct execution.")
+    
+    queue_map = {
+        "web": "web-queue",
+        "office": "office-queue",
+        "os": "os-queue",
+    }
+    queue_name = queue_map.get(request.job_type)
+    if not queue_name:
+        raise HTTPException(status_code=400, detail=f"Invalid job_type: {request.job_type}. Must be web, office, or os.")
+    
+    import time as _time
+    job_id = str(uuid4())
+    video_name = request.video_name or f"video_{int(_time.time())}"
+    
+    # Push to Redis queue
+    redis_queue.push(queue_name, {
+        "job_id": job_id,
+        "task": request.task,
+        "video_name": video_name,
+        "config": request.config,
+        "job_type": request.job_type,
+    })
+    
+    # Also track in memory for status queries
+    job_entry = {
+        "job_id": job_id,
+        "status": "queued",
+        "task": request.task,
+        "video_name": video_name,
+        "config": request.config,
+        "job_type": request.job_type,
+        "queue": queue_name,
+        "progress": None,
+        "result": None,
+        "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": None,
+        "completed_at": None,
+    }
+    async with job_queue_lock:
+        job_queue[job_id] = job_entry
+    
+    logger.info(f"Queue job submitted: {job_id} -> {queue_name}")
+    
+    return {
+        "job_id": job_id,
+        "queue": queue_name,
+        "status": "queued",
+        "websocket_url": f"ws://localhost:8000/ws/{job_id}",
+    }
+
+
+@app.get("/api/queue/stats")
+async def get_queue_stats():
+    """Get current queue lengths and worker status."""
+    if not redis_queue.redis:
+        return {"error": "Redis not connected", "queues": {}}
+    
+    return {
+        "queues": redis_queue.get_all_queue_stats(),
+        "redis_connected": True,
+    }
+
+
+@app.get("/api/queue/result/{job_id}")
+async def get_queue_result(job_id: str):
+    """Get result of a queue-processed job directly from Redis."""
+    # Check in-memory first
+    async with job_queue_lock:
+        if job_id in job_queue:
+            return job_queue[job_id]
+    
+    # Check Redis
+    if redis_queue.redis:
+        result = redis_queue.get_result(job_id)
+        status = redis_queue.get_status(job_id)
+        if result or status:
+            return {
+                "job_id": job_id,
+                "status": status or "unknown",
+                "result": result,
+            }
+    
+    raise HTTPException(status_code=404, detail="Job not found")
 
 
 @app.websocket("/ws/{job_id}")

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://webreel.dev/schema/v1.json",
+  "videos": {
+    "test_checkbox": {
+      "url": "http://127.0.0.1:5500/webreel-ai-agent/test-cases/demoform.html",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "steps": [
+        {
+          "action": "pause",
+          "ms": 2000
+        },
+        {
+          "action": "click",
+          "selector": "#input-username"
+        },
+        {
+          "action": "type",
+          "text": "admin"
+        },
+        {
+          "action": "click",
+          "selector": "#input-password"
+        },
+        {
+          "action": "type",
+          "text": "123456"
+        },
+        {
+          "action": "click",
+          "selector": "#btn-login"
+        },
+        {
+          "action": "pause",
+          "ms": 1500
+        },
+        {
+          "action": "click",
+          "text": "Tôi cam kết thông tin là chính xác",
+          "description": "Click checkbox label"
+        },
+        {
+          "action": "pause",
+          "ms": 2000,
+          "description": "Wait to see if checkbox is checked"
+        }
+      ]
+    }
+  }
+}

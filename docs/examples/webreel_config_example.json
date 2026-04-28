@@ -1,0 +1,34 @@
+{
+  "videos": {
+    "google_search_demo": {
+      "url": "https://google.com",
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      },
+      "steps": [
+        {
+          "action": "pause",
+          "ms": 1000
+        },
+        {
+          "action": "type",
+          "selector": "textarea[name=\"q\"]",
+          "text": "Python programming"
+        },
+        {
+          "action": "pause",
+          "ms": 500
+        },
+        {
+          "action": "click",
+          "selector": "text=\"Google Search\""
+        },
+        {
+          "action": "pause",
+          "ms": 2000
+        }
+      ]
+    }
+  }
+}

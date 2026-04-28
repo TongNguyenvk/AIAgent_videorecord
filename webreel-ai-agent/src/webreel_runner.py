@@ -17,7 +17,20 @@ logger = logging.getLogger(__name__)
 # Log which file is being used
 logger.info(f"[WEBREEL_RUNNER] Loaded from: {__file__}")
 
-OUTPUT_DIR = Path("output")
+
+def _resolve_output_dir() -> Path:
+    configured = os.getenv("OUTPUT_DIR")
+    if configured:
+        path = Path(configured)
+    else:
+        docker_output = Path("/app/output")
+        path = docker_output if docker_output.exists() else Path("output")
+
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+OUTPUT_DIR = _resolve_output_dir()
 # Read CDP URL from environment variable (for Docker), fallback to localhost
 CDP_URL = os.getenv("CHROME_CDP_URL", "http://localhost:9222")
 

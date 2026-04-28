@@ -87,8 +87,9 @@ class ScreenshotCapture:
                     if screenshot:
                         screenshot.save(filepath)
                     else:
-                        screenshot = pyautogui.screenshot()
-                        screenshot.save(filepath)
+                        # KHONG fallback sang toan man hinh, tao placeholder thay the
+                        logger.warning(f"  [ScreenshotCapture] Cannot capture window (PID={self.target_pid}), creating placeholder")
+                        return self.create_placeholder_image(step_index, f"Cannot capture window (PID={self.target_pid})")
                 else:
                     screenshot = pyautogui.screenshot()
                     screenshot.save(filepath)
@@ -215,8 +216,53 @@ class ScreenshotCapture:
             return None
     
     def _capture_window_by_pid(self, pid: int):
-        """Chup anh chi cua so cua PID cu the"""
+        """Chup anh chi cua so cua PID cu the - Optimized for Chrome/browsers"""
         try:
+            # Method 1: MSS (fastest, most reliable for browsers)
+            try:
+                import mss
+                import win32gui
+                
+                # Tim window handle tu PID
+                def callback(hwnd, hwnds):
+                    import win32process
+                    _, found_pid = win32process.GetWindowThreadProcessId(hwnd)
+                    if found_pid == pid and win32gui.IsWindowVisible(hwnd):
+                        hwnds.append(hwnd)
+                    return True
+                
+                hwnds = []
+                win32gui.EnumWindows(callback, hwnds)
+                
+                if not hwnds:
+                    logger.warning(f"  [ScreenshotCapture] Khong tim thay window cho PID={pid}")
+                    return None
+                
+                hwnd = hwnds[0]
+                left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+                
+                with mss.mss() as sct:
+                    monitor = {
+                        "left": left,
+                        "top": top,
+                        "width": right - left,
+                        "height": bottom - top
+                    }
+                    
+                    screenshot = sct.grab(monitor)
+                    
+                    # Convert to PIL Image
+                    from PIL import Image
+                    import numpy as np
+                    img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+                    
+                    logger.info(f"  [ScreenshotCapture] MSS captured window (PID={pid})")
+                    return img
+                    
+            except ImportError:
+                logger.debug("  [ScreenshotCapture] MSS not available, trying Win32 API")
+            
+            # Method 2: Win32 API (fallback)
             import win32gui
             import win32ui
             import win32con
@@ -270,10 +316,11 @@ class ScreenshotCapture:
             mfcDC.DeleteDC()
             win32gui.ReleaseDC(hwnd, hwndDC)
             
+            logger.info(f"  [ScreenshotCapture] Win32 captured window (PID={pid})")
             return im
             
         except Exception as e:
-            logger.warning(f"  [ScreenshotCapture] Loi chup cua so: {e}")
+            logger.warning(f"  [ScreenshotCapture] Loi chup cua so: {e}, fallback to full screen")
             return None
     
     def capture_region(self, x: int, y: int, width: int, height: int, step_index: int) -> str:

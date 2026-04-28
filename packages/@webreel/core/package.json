@@ -40,8 +40,8 @@
     "assets"
   ],
   "scripts": {
-    "clean": "rm -rf dist",
-    "build": "rm -rf dist && tsc",
+    "clean": "rimraf dist",
+    "build": "rimraf dist && tsc",
     "type-check": "tsc --noEmit",
     "dev": "tsc --watch",
     "test": "vitest run"

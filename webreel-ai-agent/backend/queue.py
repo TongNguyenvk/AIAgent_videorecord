@@ -220,7 +220,10 @@ class JobQueue:
 
     def get_all_queue_stats(self) -> dict:
         """Get stats for all queues (waiting + processing)."""
-        queues = ["web-queue", "office-queue", "os-queue"]
+        queues = [
+            "web-queue", "office-queue", "os-queue",
+            "presentation-queue", "presentation-gg-queue",
+        ]
         stats = {}
         for q in queues:
             stats[q] = {
@@ -228,6 +231,29 @@ class JobQueue:
                 "processing": self.get_processing_length(q),
             }
         return stats
+
+    def register_worker(self, job_id: str, container_name: str, ttl: int = 7200):
+        """Register which container is running a job.
+
+        Stores mapping job_id -> container_name in Redis so the autoscaler
+        can stop the correct container when a job needs to be killed.
+        TTL defaults to 2 hours (safety net for orphaned entries).
+        """
+        if self.redis:
+            self.redis.set(f"job:{job_id}:worker", container_name, ex=ttl)
+            logger.info(f"Registered worker: job {job_id} -> {container_name}")
+
+    def get_worker_for_job(self, job_id: str) -> Optional[str]:
+        """Look up which container is running a given job."""
+        if self.redis:
+            return self.redis.get(f"job:{job_id}:worker")
+        return None
+
+    def unregister_worker(self, job_id: str):
+        """Remove job-to-container mapping after job completes."""
+        if self.redis:
+            self.redis.delete(f"job:{job_id}:worker")
+            logger.debug(f"Unregistered worker for job {job_id}")
 
     def notify_api(self, job_id: str, channel: str = "job-updates"):
         """Publish job completion to Redis Pub/Sub for API WebSocket broadcast."""
@@ -242,3 +268,124 @@ class JobQueue:
                     }
                 ),
             )
+
+    def notify_api_progress(self, job_id: str, phase: float, message: str, data: dict = None, channel: str = "job-updates"):
+        """Publish job progress to Redis Pub/Sub for API WebSocket broadcast."""
+        if self.redis:
+            self.redis.publish(
+                channel,
+                json.dumps(
+                    {
+                        "job_id": job_id,
+                        "event": "progress",
+                        "progress": {
+                            "current_phase": phase,
+                            "phase_name": message,
+                            "message": message,
+                            "data": data,
+                        },
+                        "timestamp": time.time(),
+                    }
+                ),
+            )
+            
+    async def wait_for_review(self, job_id: str, timeout_seconds: int = 1800) -> Optional[list]:
+        """Wait for an approved TTS script to be published via Redis Pub/Sub.
+        
+        Args:
+            job_id: The job ID to wait for.
+            timeout_seconds: Maximum time to wait in seconds (default 30 mins).
+            
+        Returns:
+            list: The approved TTS script, or None if timed out.
+        """
+        import asyncio
+        if not self.redis:
+            logger.warning("Redis not available, wait_for_review will timeout immediately.")
+            return None
+            
+        # We need an async redis connection to use pubsub in asyncio
+        import redis.asyncio as aioredis
+        
+        # Determine the channel name
+        review_channel = f"job:{job_id}:review_approved"
+        
+        logger.info(f"Worker waiting for review on {review_channel} (timeout: {timeout_seconds}s)")
+        
+        try:
+            # Create a dedicated async connection for PubSub
+            async_redis = aioredis.from_url(self.redis_url, decode_responses=True)
+            pubsub = async_redis.pubsub()
+            await pubsub.subscribe(review_channel)
+            
+            async def _wait():
+                async for message in pubsub.listen():
+                    if message["type"] == "message":
+                        data = json.loads(message["data"])
+                        return data.get("tts_script")
+            
+            # Wait with timeout (to prevent Zombie Worker)
+            try:
+                result = await asyncio.wait_for(_wait(), timeout=timeout_seconds)
+                logger.info(f"Received approved script for job {job_id}")
+                return result
+            except asyncio.TimeoutError:
+                logger.warning(f"Timeout waiting for review for job {job_id}. Proceeding with default script.")
+                return None
+            finally:
+                await pubsub.unsubscribe(review_channel)
+                await async_redis.aclose()
+                
+        except Exception as e:
+            logger.error(f"Error waiting for review: {e}")
+            return None
+            
+    def submit_review(self, job_id: str, tts_script: list):
+        """Publish the approved TTS script to unblock the waiting worker."""
+        if self.redis:
+            review_channel = f"job:{job_id}:review_approved"
+            self.redis.publish(
+                review_channel,
+                json.dumps({"job_id": job_id, "tts_script": tts_script})
+            )
+            logger.info(f"Published approved review for job {job_id} to {review_channel}")
+
+    # ---------------------------------------------------------------------------
+    # Queue pause/resume for Circuit Breaker
+    # ---------------------------------------------------------------------------
+    def pause_queue(self, queue_name: str, reason: str = "session_expired", ttl: int = 86400):
+        """Pause a queue due to session expiry (Circuit Breaker).
+
+        When a queue is paused, no new workers will be spawned for it.
+        The pause status is stored in Redis with TTL.
+        """
+        if self.redis:
+            key = f"queue:{queue_name}:paused"
+            self.redis.set(key, json.dumps({
+                "reason": reason,
+                "paused_at": time.time(),
+            }), ex=ttl)
+            logger.warning(f"Queue {queue_name} PAUSED: {reason}")
+
+    def resume_queue(self, queue_name: str):
+        """Resume a previously paused queue."""
+        if self.redis:
+            key = f"queue:{queue_name}:paused"
+            self.redis.delete(key)
+            logger.info(f"Queue {queue_name} RESUMED")
+
+    def is_queue_paused(self, queue_name: str) -> bool:
+        """Check if a queue is currently paused."""
+        if self.redis:
+            key = f"queue:{queue_name}:paused"
+            return self.redis.exists(key) > 0
+        return False
+
+    def get_queue_pause_info(self, queue_name: str) -> Optional[dict]:
+        """Get pause information for a queue."""
+        if self.redis:
+            key = f"queue:{queue_name}:paused"
+            data = self.redis.get(key)
+            if data:
+                return json.loads(data)
+        return None

@@ -1,0 +1,34 @@
+feat: Add OS Worker V4 frontend integration
+
+Implement complete frontend UI for OS Worker V4 auto-launch feature.
+Users can now create OS recording jobs without knowing PIDs or technical details.
+
+Features:
+- App selector with 9 supported Windows apps (Excel, Word, PowerPoint, Chrome, Edge, Firefox, Notepad, Calculator, Paint)
+- File upload for Office apps (Excel, Word, PowerPoint)
+- URL input for Browser apps (Chrome, Edge, Firefox)
+- Info messages for Simple apps (Notepad, Calculator, Paint)
+- Client-side validation (file required, URL required)
+- Dark mode support
+- Responsive design (mobile/tablet/desktop)
+
+Changes:
+- frontend/src/pages/Create.tsx: Add app selector, file upload, URL input, validation (+120 lines)
+- frontend/src/lib/api.ts: Update createVideo to include V4 fields (+25 lines)
+
+Documentation:
+- webreel-ai-agent/TASK7_FRONTEND_V4_SUMMARY.md: Technical summary
+- webreel-ai-agent/FRONTEND_V4_USER_GUIDE.md: User guide with examples
+- PRD_OS_record.md: Update Task 7 status to completed
+
+Testing:
+- 8/8 features working (100%)
+- App selector renders correctly
+- File upload works for Office apps
+- URL input works for Browser apps
+- Validation prevents invalid submissions
+- Dark mode styling correct
+- Responsive layout works
+
+Related: Task 7 - Frontend Updates (PRD_OS_record.md)
+Status: ✅ PRODUCTION READY

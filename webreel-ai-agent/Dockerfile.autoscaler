@@ -1,0 +1,40 @@
+# ============================================================
+# WebReel Autoscaler
+# Lightweight image with Docker CLI + Compose for launching workers
+# ============================================================
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONPATH=/app/webreel-ai-agent
+
+# 1. Install Docker CLI + Compose plugin (static binaries, no Docker Engine)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates && \
+    # Docker CLI (~50MB static binary)
+    curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz \
+      | tar xz --strip-components=1 -C /usr/local/bin docker/docker && \
+    # Docker Compose plugin
+    mkdir -p /usr/local/lib/docker/cli-plugins && \
+    curl -fsSL "https://github.com/docker/compose/releases/download/v2.35.1/docker-compose-linux-x86_64" \
+      -o /usr/local/lib/docker/cli-plugins/docker-compose && \
+    chmod +x /usr/local/lib/docker/cli-plugins/docker-compose && \
+    # Cleanup
+    apt-get purge -y curl && \
+    apt-get autoremove -y && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# 2. Install Python dependencies (only what autoscaler needs)
+RUN pip install --no-cache-dir redis
+
+# 3. Copy only the code autoscaler needs
+COPY webreel-ai-agent/backend ./webreel-ai-agent/backend
+COPY webreel-ai-agent/worker ./webreel-ai-agent/worker
+
+HEALTHCHECK NONE
+
+CMD ["python", "-m", "worker.autoscaler"]

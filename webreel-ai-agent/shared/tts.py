@@ -355,12 +355,15 @@ def _generate_batch_edge_concurrent(
 
         out_path = output_dir / f"segment_{idx:03d}.mp3"
         
-        # Retry logic (max 2 attempts)
-        max_retries = 2
+        # Small stagger delay to avoid all requests hitting Edge TTS at once
+        await asyncio.sleep(idx * 0.1)
+        
+        # Retry logic (max 3 attempts with progressive delay)
+        max_retries = 3
         for attempt in range(max_retries):
             try:
                 if attempt > 0:
-                    await asyncio.sleep(1)  # Short delay on retry
+                    await asyncio.sleep(1 + attempt)  # Progressive: 2s, 3s
                 
                 communicate = edge_tts.Communicate(text, edge_voice, rate=rate)
                 await communicate.save(str(out_path))
@@ -371,9 +374,9 @@ def _generate_batch_edge_concurrent(
                 return idx, seg
             except Exception as e:
                 if attempt < max_retries - 1:
-                    print(f"  [TTS] Segment {idx} retry...")
+                    print(f"  [TTS] Segment {idx} retry {attempt+1}/{max_retries}...")
                 else:
-                    print(f"  [TTS WARN] Segment {idx} failed: {e}")
+                    print(f"  [TTS WARN] Segment {idx} failed after {max_retries} attempts: {e}")
                     return idx, None
         
         return idx, None

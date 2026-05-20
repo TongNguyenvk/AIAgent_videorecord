@@ -122,13 +122,17 @@ def upload_to_onedrive(file_path: str) -> str:
         # Format 4: Use webUrl directly (SharePoint format)
         url_format_4 = web_url
         
+        # Format 5: SlideShow format (Option 1)
+        url_format_5 = f"https://onedrive.live.com/view.aspx?resid={item_id}&wdSlideShow=true"
+        
         logger.info(f"URL Format 1 (ID): {url_format_1}")
         logger.info(f"URL Format 2 (Edit): {url_format_2}")
         logger.info(f"URL Format 3 (View): {url_format_3}")
         logger.info(f"URL Format 4 (WebUrl): {url_format_4}")
+        logger.info(f"URL Format 5 (SlideShow): {url_format_5}")
         
-        # Return edit format for presentations (allows Slide Show)
-        return url_format_2
+        # Return SlideShow format for presentations
+        return url_format_5
     else:
         logger.error(f"Upload error: {response.text}")
         raise Exception(f"OneDrive upload failed: {response.text}")

@@ -18,6 +18,26 @@
 #
 
 services:
+  # --- MongoDB (persistent database) ---
+  mongodb:
+    image: mongo:7
+    container_name: webreel-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-webreel}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-webreel_mongo_2026}
+    volumes:
+      - mongodb_data:/data/db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
   # --- Redis (INTERNAL ONLY - khong expose port ra ngoai!) ---
   redis:
     image: redis:7-alpine
@@ -57,11 +77,15 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-webreel_secret_2026}@redis:6379/0
+      - MONGO_URL=mongodb://${MONGO_USER:-webreel}:${MONGO_PASSWORD:-webreel_mongo_2026}@mongodb:27017
+      - MONGO_DB=webreel
       - OUTPUT_DIR=/app/output
       - PYTHONIOENCODING=utf-8
     volumes:
-      - ./output:/app/output
+      - output_data:/app/output
     depends_on:
+      mongodb:
+        condition: service_healthy
       redis:
         condition: service_healthy
     restart: unless-stopped
@@ -70,12 +94,33 @@ services:
         limits:
           memory: 1G
 
+  # --- Frontend (React SPA + Nginx reverse proxy) ---
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        # /api de Nginx reverse proxy toi backend container
+        VITE_API_URL: /api
+    container_name: webreel-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
   # --- Web Worker (polls web-queue, runs pipeline + built-in Chrome) ---
   web-worker:
+    image: webreel-worker:latest
     build:
       context: ..
-      dockerfile: webreel-ai-agent/Dockerfile.backend
-    container_name: webreel-web-worker
+      dockerfile: webreel-ai-agent/Dockerfile.worker
+    # container_name removed: each job gets its own named container
+    profiles: ["worker"]
     working_dir: /app/webreel-ai-agent
     # Override CMD: entrypoint starts Xvfb + VNC + noVNC, then runs worker
     entrypoint: ["/app/docker-entrypoint.sh"]
@@ -92,19 +137,15 @@ services:
       - FPT_API_KEY=${FPT_API_KEY:-}
       - PYTHONIOENCODING=utf-8
     shm_size: "2gb"
-    ports:
-      # noVNC: access via SSH tunnel (ssh -L 6080:localhost:6080 user@vps)
-      # then open http://localhost:6080/vnc.html
-      - "127.0.0.1:6080:6080"
     volumes:
-      - ./output:/app/output
-      - ./chrome_profile:/app/chrome_profile
+      - output_data:/app/output
+      - chrome_master_data:/app/chrome_master:ro
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
       disable: true
-    restart: unless-stopped
+    restart: "no"
     deploy:
       resources:
         limits:
@@ -115,7 +156,8 @@ services:
     build:
       context: ..
       dockerfile: webreel-ai-agent/Dockerfile.backend
-    container_name: webreel-office-worker
+    # container_name removed: each job gets its own named container
+    profiles: ["worker"]
     working_dir: /app/webreel-ai-agent
     command: ["python", "-m", "worker.office_worker"]
     environment:
@@ -125,13 +167,13 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - PYTHONIOENCODING=utf-8
     volumes:
-      - ./output:/app/output
+      - output_data:/app/output
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
       disable: true
-    restart: unless-stopped
+    restart: "no"
     deploy:
       resources:
         limits:
@@ -139,10 +181,12 @@ services:
 
   # --- Presentation Worker (PowerPoint Online testing via Chrome) ---
   presentation-worker:
+    image: webreel-worker:latest
     build:
       context: ..
-      dockerfile: webreel-ai-agent/Dockerfile.backend
-    container_name: webreel-presentation-worker
+      dockerfile: webreel-ai-agent/Dockerfile.worker
+    # container_name removed: each job gets its own named container
+    profiles: ["worker"]
     working_dir: /app/webreel-ai-agent
     entrypoint: ["/app/docker-entrypoint.sh"]
     command: ["python", "-m", "worker.presentation_worker"]
@@ -152,6 +196,7 @@ services:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-webreel_secret_2026}@redis:6379/0
       - CHROME_CDP_URL=http://localhost:9222
       - DISPLAY=:99
+      - WORKER_QUEUE=presentation-queue
       - WORKER_ID=presentation-worker-1
       - OUTPUT_DIR=/app/output
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
@@ -162,19 +207,55 @@ services:
       - MS_TENANT_ID=${MS_TENANT_ID:-}
       - MS_BOT_EMAIL=${MS_BOT_EMAIL:-}
     shm_size: "2gb"
-    ports:
-      # noVNC: access via SSH tunnel (ssh -L 6081:localhost:6081 user@vps)
-      # then open http://localhost:6081/vnc.html
-      - "127.0.0.1:6081:6080"
     volumes:
-      - ./output:/app/output
-      - ./chrome_profile:/app/chrome_profile
+      - output_data:/app/output
+      - chrome_master_data:/app/chrome_master:ro
     depends_on:
       redis:
         condition: service_healthy
     healthcheck:
       disable: true
-    restart: unless-stopped
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # --- Presentation GG Worker (Google Slides via Chrome) ---
+  presentation-gg-worker:
+    image: webreel-worker:latest
+    build:
+      context: ..
+      dockerfile: webreel-ai-agent/Dockerfile.worker
+    # container_name removed: each job gets its own named container
+    profiles: ["worker"]
+    working_dir: /app/webreel-ai-agent
+    entrypoint: ["/app/docker-entrypoint.sh"]
+    command: ["python", "-m", "worker.presentation_gg_worker"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - NODE_OPTIONS="--max-old-space-size=2048"
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-webreel_secret_2026}@redis:6379/0
+      - CHROME_CDP_URL=http://localhost:9222
+      - CHROME_PROFILE_DIR=/app/chrome_profile
+      - DISPLAY=:99
+      - WORKER_QUEUE=presentation-gg-queue
+      - WORKER_ID=presentation-gg-worker-1
+      - OUTPUT_DIR=/app/output
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - FPT_API_KEY=${FPT_API_KEY:-}
+      - PYTHONIOENCODING=utf-8
+    shm_size: "2gb"
+    volumes:
+      - output_data:/app/output
+      - chrome_master_data:/app/chrome_master:ro
+      - key_data:/app/webreel-ai-agent/key:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: "no"
     deploy:
       resources:
         limits:
@@ -184,22 +265,22 @@ services:
   autoscaler:
     build:
       context: ..
-      dockerfile: webreel-ai-agent/Dockerfile.backend
+      dockerfile: webreel-ai-agent/Dockerfile.autoscaler
     container_name: webreel-autoscaler
     working_dir: /app/webreel-ai-agent
     command: ["python", "-m", "worker.autoscaler"]
     environment:
       - REDIS_URL=redis://:${REDIS_PASSWORD:-webreel_secret_2026}@redis:6379/0
-      - MAX_WORKERS=4
-      - MIN_WORKERS=0
-      - IDLE_TIMEOUT=300
+      - MAX_WEB_WORKERS=${MAX_WEB_WORKERS:-2}
+      - MAX_PRES_WORKERS=${MAX_PRES_WORKERS:-2}
+      - MAX_PRES_GG_WORKERS=${MAX_PRES_GG_WORKERS:-2}
+      - MAX_OFFICE_WORKERS=${MAX_OFFICE_WORKERS:-2}
       - COMPOSE_FILE=/compose/docker-compose.prod.yml
       - COMPOSE_PROJECT=webreel-ai-agent
-      - WORKER_SERVICE=web-worker
     volumes:
-      # Mount Docker socket so autoscaler can control docker compose
+      # Mount Docker socket so autoscaler can launch/stop containers
       - /var/run/docker.sock:/var/run/docker.sock
-      # Mount compose file so it can read service definitions
+      # Mount thư mục hiện tại để lấy docker-compose.prod.yml
       - .:/compose:ro
     depends_on:
       redis:
@@ -212,9 +293,42 @@ services:
         limits:
           memory: 128M
 
-volumes:
-  redis_data:
+  # --- Session Manager (Master Chrome Profile + Freeze API) ---
+  session-manager:
+    image: webreel-worker:latest
+    build:
+      context: ..
+      dockerfile: webreel-ai-agent/Dockerfile.worker
+    container_name: webreel-session-manager
+    ports:
+      - "6080:6080"  # noVNC web interface
+      - "5900:5900"  # VNC server
+      - "8001:8001"  # Internal freeze API
+    working_dir: /app/webreel-ai-agent
+    entrypoint: ["/app/scripts/session-manager-start.sh"]
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DISPLAY=:99
+      - CHROME_PROFILE_DIR=/app/chrome_master
+      - VNC_PORT=5900
+      - NOVNC_PORT=6080
+    volumes:
+      - chrome_master_data:/app/chrome_master:rw
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
-# Tong RAM: 320M (Redis) + 1G (API) + 2G (Worker x N) + 128M (Autoscaler)
-# VPS 8GB: thoai mai voi max 3 workers.
-# Autoscaler tu dong scale worker len khi co job, xuong khi ranh 5 phut.
+volumes:
+  mongodb_data:
+  redis_data:
+  output_data:
+  chrome_profile_data:
+  chrome_profile_gg_data:
+  key_data:
+  chrome_master_data:
+
+# Tong RAM: 1G (MongoDB) + 320M (Redis) + 1G (API) + 128M (Frontend) + 2G (Worker x N) + 128M (Autoscaler)
+# VPS 8GB: thoai mai voi max 2 workers moi loai.
+# Autoscaler launch container rieng cho moi job, tu dong xoa khi xong.

@@ -1,0 +1,71 @@
+feat(os-worker): implement result upload functionality
+
+Task 3: OS Worker - Result Upload ✅ COMPLETED
+
+Implemented full-featured result uploader for OS Worker to upload
+processed files (video, document, PDF) back to VPS after job completion.
+
+## New Files
+
+- worker/result_uploader.py
+  - ResultUploader class with retry strategy
+  - Multipart file upload with chunked streaming
+  - Exponential backoff retry (3 attempts, 2s backoff)
+  - Progress logging with file sizes
+  - Automatic cleanup after successful upload
+
+- test_upload_final.py
+  - End-to-end test creating job via Docker exec
+  - Uploads mock files and verifies complete flow
+  - Test passed: 1.7s for 1.2MB (3 files)
+
+- TASK_3_SUMMARY.md
+  - Complete documentation of implementation
+  - Test results and performance metrics
+  - Usage instructions
+
+## Modified Files
+
+- worker/os_worker.py
+  - Integrated result_uploader
+  - Added upload configuration (API_URL, INTERNAL_API_KEY)
+  - Modified process_os_job() to upload after processing
+  - Enhanced startup logs
+
+- .env
+  - Added OS Worker configuration section
+  - API_URL, REDIS_URL, WORKER_ID, WORKER_QUEUE
+  - IDLE_THRESHOLD, UPLOAD_ENABLED, CLEANUP_AFTER_UPLOAD
+
+- .env.example
+  - Added OS Worker configuration template
+
+- OS_WORKER_PRD.md
+  - Marked Task 3 as completed
+  - Added implementation details and test results
+
+## Features
+
+✅ Multipart file upload (video, document, pdf)
+✅ Retry logic with exponential backoff
+✅ Progress logging with file sizes
+✅ File validation (type, size)
+✅ MongoDB integration
+✅ Cleanup after upload (configurable)
+✅ Authentication (Bearer token)
+✅ Error handling (401, 400, 404, 413, 500)
+
+## Test Results
+
+- Upload Speed: 1.7s for 1.2MB (3 files)
+- Throughput: ~700 KB/s
+- Test Job ID: 69ee48b4-041c-4096-96f8-d697497d80d6
+- All acceptance criteria met
+
+## Next Steps
+
+- Task 4: SSH Tunnel Setup
+- Task 5: OS Worker Integration
+- Task 6: Job Routing
+
+Related: OS_WORKER_PRD.md, TASK_3_SUMMARY.md

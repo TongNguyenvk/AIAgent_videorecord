@@ -3,7 +3,7 @@ FastAPI Backend for Webreel Video Generation
 Provides REST API endpoints and WebSocket support for asynchronous video generation.
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, UploadFile
+from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, UploadFile, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -11,12 +11,13 @@ from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import asyncio
 import logging
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Optional
 
-from backend.models import (
+from backend.job_models import (
     JobSubmitRequest,
     JobSubmitResponse,
     Job,
@@ -27,10 +28,21 @@ from backend.models import (
 from backend.tasks import execute_pipeline_task
 from backend.websocket import manager
 from backend.logging_config import setup_logging
-from backend.middleware import RequestLoggingMiddleware
+from backend.middleware import RequestLoggingMiddleware, limiter, rate_limit_exceeded_handler
 from backend.output_paths import build_video_url, resolve_output_dir
 from backend.shutdown import ShutdownHandler
 from backend.queue import JobQueue
+from backend.database import Database
+from backend.admin_routes import router as admin_router
+from backend.routes.auth import router as auth_router
+from backend.routes.jobs import router as jobs_router
+from backend.routes.admin import router as admin_api_router
+from backend.routes.browser import router as browser_router
+from backend.routes.internal import router as internal_router
+from backend.routes.download import router as download_router
+from backend.routes.session import router as session_router
+from backend.auth import get_current_user
+from backend.utils.sanitize import sanitize_filename
 
 # Setup structured logging
 setup_logging()
@@ -56,6 +68,61 @@ shutdown_handler = ShutdownHandler(
 )
 
 
+async def hydrate_job_queue_from_mongodb():
+    """
+    Load active jobs from MongoDB back into RAM on startup.
+    
+    This ensures jobs survive container restarts (RAM hydration).
+    Critical for production reliability.
+    """
+    if not Database.is_connected():
+        logger.warning("MongoDB not connected, skipping hydration")
+        return
+    
+    from backend.crud.jobs import list_jobs
+    
+    try:
+        # Load pending and running jobs
+        pending_jobs = await list_jobs(status="pending", limit=1000)
+        running_jobs = await list_jobs(status="running", limit=1000)
+        pending_review_jobs = await list_jobs(status="pending_review", limit=1000)
+        
+        active_jobs = pending_jobs + running_jobs + pending_review_jobs
+        
+        if not active_jobs:
+            logger.info("No active jobs to hydrate from MongoDB")
+            return
+        
+        async with job_queue_lock:
+            for job in active_jobs:
+                job_id = job["job_id"]
+                
+                # Convert MongoDB document to in-memory format
+                job_entry = {
+                    "job_id": job_id,
+                    "status": job["status"],
+                    "task": job["task"],
+                    "video_name": job["video_name"],
+                    "config": job["config"],
+                    "progress": job.get("progress"),
+                    "result": job.get("result"),
+                    "error": job.get("error"),
+                    "created_at": job["created_at"].isoformat() if hasattr(job["created_at"], "isoformat") else str(job["created_at"]),
+                    "started_at": job.get("started_at"),
+                    "completed_at": job.get("completed_at"),
+                }
+                
+                job_queue[job_id] = job_entry
+        
+        logger.info(f"✅ Hydrated {len(active_jobs)} active jobs from MongoDB into RAM")
+        logger.info(f"   - Pending: {len(pending_jobs)}")
+        logger.info(f"   - Running: {len(running_jobs)}")
+        logger.info(f"   - Pending Review: {len(pending_review_jobs)}")
+        
+    except Exception as e:
+        logger.error(f"Failed to hydrate job queue from MongoDB: {e}", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -69,6 +136,14 @@ async def lifespan(app: FastAPI):
     
     # Startup
     shutdown_handler.register_signal_handlers()
+    
+    # Connect to MongoDB FIRST (source of truth)
+    await Database.connect()
+    
+    # Hydrate job queue from MongoDB (CRITICAL for production!)
+    await hydrate_job_queue_from_mongodb()
+    
+    # Then load from disk (backward compat, will be merged with MongoDB data)
     await shutdown_handler.load_job_queue()
     
     # Start Redis result listener (polls worker results in background)
@@ -80,11 +155,17 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Redis not available, using direct execution mode only")
     
+    if Database.is_connected():
+        logger.info("MongoDB connected and ready")
+    else:
+        logger.warning("MongoDB not available, using in-memory storage only")
+    
     yield
     
     # Shutdown
     if _result_listener_task:
         _result_listener_task.cancel()
+    await Database.close()
     logger.info("FastAPI backend shutting down")
 
 
@@ -94,6 +175,24 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# Proxy headers/trusted hosts middleware (placed before rate limiter)
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+import os
+allowed_hosts = os.getenv("ALLOWED_HOSTS", "*").split(",")
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=allowed_hosts
+)
+
+# Register rate limiter state and exception handler
+if limiter is not None:
+    app.state.limiter = limiter
+    try:
+        from slowapi.errors import RateLimitExceeded
+        app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+    except ImportError:
+        pass
 
 # Add request logging middleware
 app.add_middleware(RequestLoggingMiddleware)
@@ -111,6 +210,16 @@ app.add_middleware(
 output_dir = resolve_output_dir()
 output_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/videos", StaticFiles(directory=str(output_dir)), name="videos")
+
+# Include routers
+app.include_router(auth_router)
+app.include_router(jobs_router)  # NEW: User-scoped job routes
+app.include_router(admin_api_router)  # NEW: Admin API routes
+app.include_router(browser_router)  # NEW: Browser session management
+app.include_router(internal_router)  # NEW: Internal API for OS Worker
+app.include_router(download_router)  # NEW: Download endpoints
+app.include_router(session_router)  # NEW: Session Manager API
+app.include_router(admin_router)  # Legacy admin routes (cookies, etc.)
 
 
 async def _listen_for_worker_results():
@@ -130,38 +239,171 @@ async def _listen_for_worker_results():
     
     try:
         pubsub = redis_queue.redis.pubsub()
-        pubsub.subscribe("job-updates")
+        pubsub.subscribe("job-updates", "session-expired")
         
         while True:
             message = pubsub.get_message(timeout=2.0)
             if message and message["type"] == "message":
                 try:
+                    channel = message.get("channel", "job-updates")
                     data = _json.loads(message["data"])
+
+                    # ---------------------------------------------------------
+                    # Circuit Breaker: xử lý session-expired event
+                    # ---------------------------------------------------------
+                    if channel == "session-expired":
+                        queue_name = data.get("queue", "unknown")
+                        job_id = data.get("job_id", "unknown")
+                        error_msg = data.get("error", "Session expired")
+                        logger.warning(
+                            f"CIRCUIT BREAKER: Queue {queue_name} đã bị tạm dừng "
+                            f"do session hết hạn (job {job_id}): {error_msg}"
+                        )
+
+                        # Cập nhật job status trong RAM
+                        async with job_queue_lock:
+                            if job_id in job_queue:
+                                job_queue[job_id]["status"] = "failed"
+                                job_queue[job_id]["error"] = f"SESSION_EXPIRED: {error_msg}"
+                                job_queue[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+                        # Cập nhật MongoDB
+                        if Database.is_connected():
+                            from backend.crud.jobs import update_job
+                            await update_job(job_id, {
+                                "status": "failed",
+                                "error": f"SESSION_EXPIRED: {error_msg}",
+                                "completed_at": datetime.now(timezone.utc),
+                            })
+
+                        # Broadcast cảnh báo tới TẤT CẢ WebSocket clients
+                        await manager.broadcast_global({
+                            "event": "session_expired",
+                            "queue": queue_name,
+                            "job_id": job_id,
+                            "error": error_msg,
+                            "message": f"Queue {queue_name} đã bị tạm dừng: session hết hạn. Vui lòng đăng nhập lại trên Session Manager.",
+                            "timestamp": data.get("timestamp", time.time()),
+                        })
+
+                        # Broadcast cập nhật cho job cụ thể
+                        await broadcast_progress(job_id)
+                        continue
+
+                    # ---------------------------------------------------------
+                    # Xử lý job-updates bình thường
+                    # ---------------------------------------------------------
                     job_id = data.get("job_id")
                     if not job_id:
                         continue
                     
+                    event = data.get("event")
+                    
+                    if event == "progress":
+                        progress_data = data.get("progress")
+                        new_status = None
+                        async with job_queue_lock:
+                            if job_id in job_queue:
+                                job_queue[job_id]["progress"] = progress_data
+                                if progress_data.get("current_phase") == 2.5:
+                                    job_queue[job_id]["status"] = "pending_review"
+                                    new_status = "pending_review"
+                                else:
+                                    # Sync running status for other phases
+                                    current = job_queue[job_id].get("status")
+                                    if current in ("queued", "pending"):
+                                        job_queue[job_id]["status"] = "running"
+                                        new_status = "running"
+                        
+                        # Persist status change to MongoDB
+                        if new_status and Database.is_connected():
+                            from backend.crud.jobs import update_job
+                            mongo_updates = {"progress": progress_data, "status": new_status}
+                            if new_status == "running":
+                                mongo_updates["started_at"] = datetime.now(timezone.utc)
+                            await update_job(job_id, mongo_updates)
+                            logger.info(f"MongoDB synced: Job {job_id} -> {new_status}")
+                        
+                        await broadcast_progress(job_id)
+                        continue
+                        
+                    if event != "completed":
+                        continue
+                        
                     # Fetch full result from Redis
                     result = redis_queue.get_result(job_id)
                     if not result:
                         continue
                     
+                    completed_at = datetime.now(timezone.utc).isoformat()
+                    video_path_str = result.get("video_path", "")
+                    video_url = ""
+                    
+                    if video_path_str:
+                        from backend.storage import R2Storage
+                        from pathlib import Path
+                        import os
+                        
+                        r2_storage = R2Storage()
+                        local_path = Path(video_path_str)
+                        
+                        if r2_storage.is_enabled() and local_path.exists():
+                            logger.info(f"Uploading video {local_path.name} to R2...")
+                            r2_result = await r2_storage.upload_video(local_path, job_id)
+                            
+                            if r2_result and "cdn_url" in r2_result:
+                                video_url = r2_result["cdn_url"]
+                                logger.info(f"Uploaded to R2: {video_url}. Deleting local file.")
+                                try:
+                                    os.remove(local_path)
+                                except Exception as e:
+                                    logger.warning(f"Failed to delete local video file {local_path}: {e}")
+                            else:
+                                video_url = build_video_url(video_path_str)
+                        else:
+                            video_url = build_video_url(video_path_str)
+
+                    result_status = result.get("status", "completed")
+                    result_data = {
+                        "video_path": video_path_str,
+                        "video_url": video_url,
+                        "duration_seconds": None,
+                    }
+                    
+                    # Update progress to final phase when completed
+                    final_progress = {
+                        "current_phase": 6,
+                        "phase_name": "Completed",
+                        "message": "Video generation completed successfully"
+                    }
+                    
                     # Update in-memory job queue
                     async with job_queue_lock:
                         if job_id in job_queue:
-                            job_queue[job_id]["status"] = result.get("status", "completed")
-                            job_queue[job_id]["result"] = {
-                                "video_path": result.get("video_path", ""),
-                                "video_url": build_video_url(result["video_path"]) if result.get("video_path") else "",
-                                "duration_seconds": None,
-                            }
+                            job_queue[job_id]["status"] = result_status
+                            job_queue[job_id]["result"] = result_data
+                            job_queue[job_id]["progress"] = final_progress
                             if result.get("error"):
                                 job_queue[job_id]["error"] = result["error"]
-                            job_queue[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+                            job_queue[job_id]["completed_at"] = completed_at
+                    
+                    # Persist to MongoDB
+                    if Database.is_connected():
+                        from backend.crud.jobs import update_job
+                        mongo_updates = {
+                            "status": result_status,
+                            "result": result_data,
+                            "progress": final_progress,
+                            "completed_at": datetime.now(timezone.utc),
+                        }
+                        if result.get("error"):
+                            mongo_updates["error"] = result["error"]
+                        await update_job(job_id, mongo_updates)
+                        logger.info(f"MongoDB synced: Job {job_id} -> {result_status} (completed)")
                     
                     # Broadcast to WebSocket clients
                     await broadcast_progress(job_id)
-                    logger.info(f"Worker result received for Job {job_id}: {result.get('status')}")
+                    logger.info(f"Worker result received for Job {job_id}: {result_status}")
                     
                 except Exception as e:
                     logger.warning(f"Error processing worker result: {e}")
@@ -286,9 +528,13 @@ async def submit_job(request: JobSubmitRequest, background_tasks: BackgroundTask
     """
     Submit a new video generation job.
     
-    Creates a new job entry in the queue with pending status, spawns a background
-    task to execute the pipeline, and returns the job_id and websocket_url for
-    progress tracking.
+    Creates a new job entry in the queue with pending status. Routes the job
+    to the appropriate queue based on environment:
+    - web: Execute directly in background task
+    - os: Route to os-queue (Redis) for OS Worker
+    - presentation: Route to presentation-queue (Redis) for Presentation Worker
+    
+    Returns the job_id and websocket_url for progress tracking.
     
     Requirements: 8.1, 2.3, 1.1, 3.1, 3.6, 10.1
     """
@@ -303,12 +549,15 @@ async def submit_job(request: JobSubmitRequest, background_tasks: BackgroundTask
     # Generate unique job_id
     job_id = str(uuid4())
     
+    environment = request.environment
+    
     logger.info(
-        f"Job submitted: {job_id}",
+        f"Job submitted: {job_id} (environment: {environment})",
         extra={
             "job_id": job_id,
             "task": request.task[:100],  # Truncate long tasks
-            "video_name": request.video_name
+            "video_name": request.video_name,
+            "environment": environment
         }
     )
     
@@ -318,6 +567,7 @@ async def submit_job(request: JobSubmitRequest, background_tasks: BackgroundTask
         "status": "pending",
         "task": request.task,
         "video_name": request.video_name,
+        "environment": environment,
         "config": request.config.model_dump(),
         "progress": None,
         "result": None,
@@ -331,24 +581,79 @@ async def submit_job(request: JobSubmitRequest, background_tasks: BackgroundTask
     async with job_queue_lock:
         job_queue[job_id] = job_entry
     
-    # Create asyncio task for immediate cancellation support
-    task = asyncio.create_task(
-        execute_pipeline_with_tracking(
-            job_id=job_id,
-            task=request.task,
-            video_name=request.video_name,
-            config=request.config.model_dump()
+    # Route job based on environment
+    if environment == "web":
+        # Web environment: Execute directly in background task
+        logger.info(f"Job {job_id}: Routing to web pipeline (direct execution)")
+        
+        # Create asyncio task for immediate cancellation support
+        task = asyncio.create_task(
+            execute_pipeline_with_tracking(
+                job_id=job_id,
+                task=request.task,
+                video_name=request.video_name,
+                config=request.config.model_dump()
+            )
         )
-    )
+        
+        # Store task reference for cancellation
+        async with job_tasks_lock:
+            job_tasks[job_id] = task
     
-    # Store task reference for cancellation
-    async with job_tasks_lock:
-        job_tasks[job_id] = task
+    elif environment == "os":
+        # OS environment: Route to os-queue for OS Worker
+        if not redis_queue.redis:
+            raise HTTPException(
+                status_code=503,
+                detail="OS Worker not available: Redis queue not connected"
+            )
+        
+        logger.info(f"Job {job_id}: Routing to os-queue for OS Worker")
+        
+        # Update status to queued
+        async with job_queue_lock:
+            job_queue[job_id]["status"] = "queued"
+        
+        # Push to Redis queue
+        redis_queue.push("os-queue", job_entry)
+        
+        # Persist to MongoDB
+        if Database.is_connected():
+            from backend.crud.jobs import create_job
+            await create_job(job_entry)
+    
+    elif environment == "presentation":
+        # Presentation environment: Route to presentation-queue
+        if not redis_queue.redis:
+            raise HTTPException(
+                status_code=503,
+                detail="Presentation Worker not available: Redis queue not connected"
+            )
+        
+        logger.info(f"Job {job_id}: Routing to presentation-queue for Presentation Worker")
+        
+        # Update status to queued
+        async with job_queue_lock:
+            job_queue[job_id]["status"] = "queued"
+        
+        # Push to Redis queue
+        redis_queue.push("presentation-queue", job_entry)
+        
+        # Persist to MongoDB
+        if Database.is_connected():
+            from backend.crud.jobs import create_job
+            await create_job(job_entry)
+    
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid environment: {environment}"
+        )
     
     # Return response with websocket URL
     return JobSubmitResponse(
         job_id=job_id,
-        status="pending",
+        status=job_entry["status"],
         created_at=datetime.now(timezone.utc),
         websocket_url=f"ws://localhost:8000/ws/{job_id}"
     )
@@ -373,33 +678,87 @@ async def get_job_status(job_id: str):
     return job_data
 
 
-@app.get("/api/jobs")
-async def list_jobs(status: Optional[str] = None, limit: int = 100):
+@app.get("/api/jobs/{job_id}/script")
+async def get_job_script(job_id: str):
     """
-    List all jobs with optional status filtering and pagination.
-    
-    Returns jobs sorted by created_at timestamp in descending order.
-    Supports filtering by status and limiting the number of results.
-    
-    Requirements: 8.3
+    Retrieve the TTS script for a job in Phase 2.5.
     """
+    # Try in-memory first
+    video_name = None
     async with job_queue_lock:
-        jobs = list(job_queue.values())
+        if job_id in job_queue:
+            video_name = job_queue[job_id].get("video_name")
     
-    # Filter by status if provided
-    if status:
-        jobs = [job for job in jobs if job["status"] == status]
+    # If not in memory, try MongoDB
+    if not video_name and Database.is_connected():
+        from backend.crud.jobs import get_job
+        job_doc = await get_job(job_id)
+        if job_doc:
+            video_name = job_doc.get("video_name")
     
-    # Sort by created_at (newest first)
-    jobs.sort(key=lambda x: x["created_at"], reverse=True)
+    if not video_name:
+        raise HTTPException(status_code=404, detail="Job not found or video_name missing")
+        
+    output_dir = resolve_output_dir()
+    script_path = output_dir / video_name / "tts_script.json"
     
-    # Apply limit
-    jobs = jobs[:limit]
-    
-    return {
-        "jobs": jobs,
-        "total": len(jobs)
-    }
+    if not script_path.exists():
+        # Return empty script if no script yet
+        return {"script": {"segments": [], "total_segments": 0, "review_status": "pending"}}
+        
+    try:
+        import json
+        with open(script_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        # data is either a list of segments or already a dict
+        if isinstance(data, list):
+            segments = [
+                {
+                    "id": f"seg_{i:03d}",
+                    "text": seg.get("narration", seg.get("text", "")),
+                    "timing": seg.get("duration", seg.get("timing")),
+                    "action_type": seg.get("action_type", ""),
+                }
+                for i, seg in enumerate(data)
+            ]
+            return {
+                "script": {
+                    "segments": segments,
+                    "total_segments": len(segments),
+                    "reviewed_segments": 0,
+                    "approved_segments": 0,
+                    "review_status": "pending",
+                }
+            }
+        else:
+            # Already structured
+            return {"script": data}
+    except Exception as e:
+        logger.error(f"Failed to read script: {e}")
+        raise HTTPException(status_code=500, detail="Failed to read script")
+
+
+# DEPRECATED: Old job endpoints without authentication
+# These are replaced by /api/jobs routes with user isolation
+# Kept for backward compatibility but should not be used
+
+# @app.get("/api/jobs")
+# async def list_jobs_old(status: Optional[str] = None, limit: int = 100):
+#     """DEPRECATED: Use /api/jobs with authentication instead."""
+#     async with job_queue_lock:
+#         jobs = list(job_queue.values())
+#     
+#     if status:
+#         jobs = [job for job in jobs if job["status"] == status]
+#     
+#     jobs.sort(key=lambda x: x["created_at"], reverse=True)
+#     jobs = jobs[:limit]
+#     
+#     return {
+#         "jobs": jobs,
+#         "total": len(jobs)
+#     }
 
 
 @app.post("/api/jobs/{job_id}/review")
@@ -415,18 +774,33 @@ async def submit_review(job_id: str, request: dict):
     Returns:
         dict: Confirmation message
     """
+    # Get video_name from memory or MongoDB
+    video_name = None
     async with job_queue_lock:
-        if job_id not in job_queue:
-            raise HTTPException(status_code=404, detail="Job not found")
-        
-        job_data = job_queue[job_id]
-        
-        # Check if job is waiting for review
-        if job_data.get("status") != "running":
-            raise HTTPException(
-                status_code=400,
-                detail=f"Job is not running (status: {job_data.get('status')})"
-            )
+        if job_id in job_queue:
+            job_data = job_queue[job_id]
+            video_name = job_data.get("video_name")
+            current_status = job_data.get("status")
+        else:
+            current_status = None
+    
+    # If not in memory, try MongoDB
+    if not video_name and Database.is_connected():
+        from backend.crud.jobs import get_job
+        job_doc = await get_job(job_id)
+        if job_doc:
+            video_name = job_doc.get("video_name")
+            current_status = job_doc.get("status")
+    
+    if not video_name:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Check if job is waiting for review (accept both pending_review and running)
+    if current_status not in ["pending_review", "running"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Job is not waiting for review (status: {current_status})"
+        )
     
     # Get reviewed script
     tts_script = request.get("tts_script", [])
@@ -438,26 +812,49 @@ async def submit_review(job_id: str, request: dict):
         extra={"job_id": job_id, "segment_count": len(tts_script)}
     )
     
-    # Set reviewed script in pipeline module using job_id
+    # Save reviewed script back to file (overwrite original)
+    output_dir = resolve_output_dir()
+    script_path = output_dir / video_name / "tts_script.json"
+    
     try:
-        import sys
-        from pathlib import Path
-        agent_dir = Path(__file__).parent.parent
-        sys.path.insert(0, str(agent_dir))
-        from run_pipeline import set_reviewed_script, get_review_pause_event
+        import json
+        # Convert to the format worker expects (list of dicts with 'text' and 'narration')
+        script_data = [
+            {
+                "text": seg.get("text", seg.get("narration", "")),
+                "narration": seg.get("text", seg.get("narration", "")),
+                "narration_index": i,
+                "duration": seg.get("timing"),
+                "action_type": seg.get("action_type", ""),
+                "edited": seg.get("edited", False),
+                "approved": seg.get("approved", True),
+            }
+            for i, seg in enumerate(tts_script)
+        ]
         
-        set_reviewed_script(job_id, tts_script)
+        with open(script_path, "w", encoding="utf-8") as f:
+            json.dump(script_data, f, ensure_ascii=False, indent=2)
         
-        # Get and set the pause event to resume pipeline
-        pause_event = get_review_pause_event(job_id)
-        if pause_event:
-            pause_event.set()
-            logger.info(f"Job {job_id}: Pipeline resumed after review")
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Job is not waiting for review (no pause event found)"
-            )
+        logger.info(f"Job {job_id}: Saved reviewed script to {script_path}")
+    except Exception as e:
+        logger.error(f"Failed to save reviewed script: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save script: {str(e)}")
+    
+    # Submit review via Redis Pub/Sub to unblock worker
+    try:
+        redis_queue.submit_review(job_id, tts_script)
+        logger.info(f"Job {job_id}: Review submitted to Redis, unblocking worker")
+        
+        # Update status in memory and MongoDB
+        async with job_queue_lock:
+            if job_id in job_queue:
+                job_queue[job_id]["status"] = "running"
+        
+        if Database.is_connected():
+            from backend.crud.jobs import update_job
+            await update_job(job_id, {"status": "running"})
+        
+        await broadcast_progress(job_id)
         
         return {
             "job_id": job_id,
@@ -473,10 +870,14 @@ async def submit_review(job_id: str, request: dict):
 @app.delete("/api/jobs/{job_id}")
 async def cancel_job(job_id: str):
     """
-    Cancel a running job immediately by killing the asyncio task.
+    Cancel a running job immediately.
     
-    This will forcefully terminate the pipeline execution, even if it's in the
-    middle of a phase. Useful for breaking out of infinite loops or stuck operations.
+    For jobs running on Docker workers (queued/running via Redis):
+      - Publishes a job-kill event to Redis Pub/Sub.
+      - The autoscaler picks up the event and stops the worker container.
+    
+    For jobs running directly (asyncio tasks on the API server):
+      - Cancels the asyncio task immediately.
     
     Returns:
         dict: Updated job status
@@ -488,8 +889,8 @@ async def cancel_job(job_id: str):
         job_data = job_queue[job_id]
         current_status = job_data["status"]
         
-        # Only allow cancelling pending or running jobs
-        if current_status not in ["pending", "running"]:
+        # Allow cancelling pending, queued, running, and pending_review jobs
+        if current_status not in ["pending", "queued", "running", "pending_review"]:
             raise HTTPException(
                 status_code=400,
                 detail=f"Cannot cancel job with status: {current_status}"
@@ -505,7 +906,7 @@ async def cancel_job(job_id: str):
         extra={"job_id": job_id, "previous_status": current_status}
     )
     
-    # Kill the asyncio task immediately
+    # Kill the asyncio task immediately (for direct-execution jobs)
     async with job_tasks_lock:
         if job_id in job_tasks:
             task = job_tasks[job_id]
@@ -514,8 +915,47 @@ async def cancel_job(job_id: str):
                 logger.info(f"Job {job_id}: Asyncio task cancelled (force kill)")
             # Remove task reference
             del job_tasks[job_id]
-        else:
-            logger.warning(f"Job {job_id}: No task found to cancel")
+    
+    # For jobs routed to Redis workers: publish kill event to autoscaler
+    if redis_queue.redis:
+        import json as _json
+        redis_queue.redis.publish(
+            "job-kill",
+            _json.dumps({"job_id": job_id}),
+        )
+        logger.info(f"Job {job_id}: Published job-kill event to autoscaler")
+        
+        # Also remove from queue if still queued (not yet picked up by worker)
+        job_environment = job_data.get("environment", "")
+        queue_mapping = {
+            "os": "os-queue",
+            "presentation": "presentation-queue",
+        }
+        queue_name = queue_mapping.get(job_environment)
+        job_type = job_data.get("job_type", "")
+        if job_type == "presentation_gg":
+            queue_name = "presentation-gg-queue"
+        elif job_type == "presentation":
+            queue_name = "presentation-queue"
+        
+        if queue_name and current_status == "queued":
+            # Try to remove from the waiting queue
+            try:
+                payload = _json.dumps(job_data, ensure_ascii=False, default=str)
+                removed = redis_queue.redis.lrem(queue_name, 0, payload)
+                if removed:
+                    logger.info(f"Job {job_id}: Removed from {queue_name}")
+            except Exception as e:
+                logger.warning(f"Failed to remove job from queue: {e}")
+    
+    # Persist cancellation to MongoDB
+    if Database.is_connected():
+        from backend.crud.jobs import update_job
+        await update_job(job_id, {
+            "status": "cancelled",
+            "error": "Job cancelled by user (force killed)",
+            "completed_at": datetime.now(timezone.utc),
+        })
     
     # Broadcast cancellation to WebSocket clients
     await broadcast_progress(job_id)
@@ -538,21 +978,32 @@ async def cancel_job(job_id: str):
     }
 
 
+
 @app.get("/api/jobs/{job_id}/video")
 async def download_video(job_id: str):
     """
     Download the generated video file.
     
-    Returns the video file with appropriate Content-Disposition header
-    for download. Returns 404 if job is not completed or video file is missing.
+    For R2-hosted videos: proxies the download server-side to avoid CORS issues.
+    The browser's fetch() with Authorization header cannot follow a 302 redirect
+    to a different domain (R2 CDN) without triggering CORS blocks. By proxying
+    through the backend, the frontend only talks to its own origin.
+    
+    For local videos: returns the file directly via FileResponse.
     
     Requirements: 8.4, 8.5
     """
+    job_data = None
     async with job_queue_lock:
-        if job_id not in job_queue:
-            raise HTTPException(status_code=404, detail="Job not found")
+        if job_id in job_queue:
+            job_data = job_queue[job_id]
+            
+    if not job_data:
+        from backend.crud.jobs import get_job
+        job_data = await get_job(job_id)
         
-        job_data = job_queue[job_id]
+    if not job_data:
+        raise HTTPException(status_code=404, detail="Job not found")
     
     # Check if job is completed
     if job_data["status"] != "completed":
@@ -562,15 +1013,60 @@ async def download_video(job_id: str):
         )
     
     # Check if result exists
-    if not job_data.get("result") or not job_data["result"].get("video_path"):
-        raise HTTPException(status_code=404, detail="Video file path not found")
+    if not job_data.get("result"):
+        raise HTTPException(status_code=404, detail="Video result not found")
     
-    # Get video file path
-    video_path = Path(job_data["result"]["video_path"])
+    video_url = job_data["result"].get("video_url")
+    video_path_str = job_data["result"].get("video_path")
+    
+    # If video is hosted on R2 CDN, proxy the download server-side
+    if video_url and video_url.startswith("http"):
+        import httpx
+        from fastapi.responses import StreamingResponse
+        
+        # Extract filename from URL or use job_id
+        url_filename = video_url.rsplit("/", 1)[-1] if "/" in video_url else f"{job_id}.mp4"
+        
+        try:
+            async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+                r2_response = await client.get(video_url)
+                
+                if r2_response.status_code != 200:
+                    logger.error(f"R2 proxy failed: {r2_response.status_code} for {video_url}")
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Failed to fetch video from storage (status {r2_response.status_code})"
+                    )
+                
+                # Stream the R2 response content to the client
+                content_length = r2_response.headers.get("content-length")
+                headers = {
+                    "Content-Disposition": f'attachment; filename="{url_filename}"',
+                }
+                if content_length:
+                    headers["Content-Length"] = content_length
+                
+                return StreamingResponse(
+                    content=iter([r2_response.content]),
+                    media_type="video/mp4",
+                    headers=headers,
+                )
+        except httpx.TimeoutException:
+            logger.error(f"R2 proxy timeout for {video_url}")
+            raise HTTPException(status_code=504, detail="Timeout fetching video from storage")
+        except httpx.RequestError as e:
+            logger.error(f"R2 proxy request error: {e}")
+            raise HTTPException(status_code=502, detail="Failed to connect to video storage")
+    
+    # Fallback to local file if not external
+    if not video_path_str:
+        raise HTTPException(status_code=404, detail="Video file path not found")
+        
+    video_path = Path(video_path_str)
     
     # Check if file exists
     if not video_path.exists():
-        raise HTTPException(status_code=404, detail="Video file not found on disk")
+        raise HTTPException(status_code=404, detail="Video file not found on disk (may have been uploaded to R2 and deleted locally)")
     
     # Return file with download header
     return FileResponse(
@@ -589,14 +1085,19 @@ async def upload_pptx(
     tts_engine: str = "edge",
     padding_ms: int = 500,
     language: str = "Vietnamese",
+    enable_review: bool = True,
+    user: dict = Depends(get_current_user),
 ):
     """Upload a PPTX/PDF file and start the Slide-to-Video pipeline.
+    
+    Requires: Authorization header with Bearer token.
     
     Flow:
       1. Receives .pptx or .pdf file
       2. Saves to output directory
-      3. Submits job to office-queue (Slide pipeline)
-      4. Returns job_id + websocket URL for tracking
+      3. Submits job to presentation-queue
+      4. Saves job record to MongoDB
+      5. Returns job_id + websocket URL for tracking
     """
     if not file.filename or not file.filename.lower().endswith((".pptx", ".ppt", ".pdf")):
         raise HTTPException(status_code=400, detail="Only .pptx, .ppt, or .pdf files are accepted")
@@ -608,7 +1109,8 @@ async def upload_pptx(
     
     # Generate job ID and video name
     job_id = str(uuid4())
-    video_name = f"slide_{Path(file.filename).stem}_{job_id[:8]}"
+    safe_filename = sanitize_filename(file.filename)
+    video_name = f"slide_{Path(safe_filename).stem}_{job_id[:8]}"
     
     # Save file to output directory
     import os
@@ -616,13 +1118,17 @@ async def upload_pptx(
     upload_dir = output_dir / video_name / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     
-    file_path = upload_dir / file.filename
+    file_path = upload_dir / safe_filename
     with open(file_path, "wb") as f:
         f.write(content)
     
-    logger.info(f"PPTX uploaded: {file.filename} ({len(content)} bytes) -> {file_path}")
+    logger.info(f"PPTX uploaded: {safe_filename} ({len(content)} bytes) -> {file_path}")
     
-    # Submit to office-queue
+    # Extract user info from token
+    user_id = user["user_id"]
+    user_email = user["email"]
+    
+    # Submit to presentation-queue
     job_data = {
         "job_id": job_id,
         "video_name": video_name,
@@ -633,11 +1139,42 @@ async def upload_pptx(
             "tts_engine": tts_engine,
             "padding_ms": padding_ms,
             "language": language,
+            "enable_review": enable_review,
         },
+        "job_type": "presentation",
+        "user_id": user_id,
+        "user_email": user_email,
     }
     
-    redis_queue.push("office-queue", job_data)
-    logger.info(f"Submitted to office-queue: {job_id}")
+    redis_queue.push("presentation-queue", job_data)
+    
+    # Build job entry for both RAM and MongoDB
+    job_entry = {
+        "job_id": job_id,
+        "status": "queued",
+        "task": task,
+        "video_name": video_name,
+        "config": job_data["config"],
+        "job_type": "presentation",
+        "queue": "presentation-queue",
+        "user_id": user_id,
+        "user_email": user_email,
+        "progress": None,
+        "result": None,
+        "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": None,
+        "completed_at": None,
+    }
+    async with job_queue_lock:
+        job_queue[job_id] = job_entry
+    
+    # Persist to MongoDB so frontend can see it
+    if Database.is_connected():
+        from backend.crud.jobs import create_job
+        await create_job(job_entry)
+        
+    logger.info(f"Submitted to presentation-queue: {job_id} (user: {user_email})")
     
     return {
         "job_id": job_id,
@@ -647,6 +1184,123 @@ async def upload_pptx(
         "file_size": len(content),
         "ws_url": f"/ws/{job_id}",
         "result_url": f"/api/queue/result/{job_id}",
+    }
+
+
+@app.post("/api/upload-pptx-gg")
+async def upload_pptx_gg(
+    file: UploadFile,
+    task: str = "Create a lecture video explaining each slide",
+    tts_voice: str = "vi-VN-HoaiMyNeural",
+    tts_engine: str = "edge",
+    padding_ms: int = 500,
+    language: str = "Vietnamese",
+    enable_review: bool = True,
+    user: dict = Depends(get_current_user),
+):
+    """Upload a PPTX file and start the Google Slides pipeline.
+    
+    Requires: Authorization header with Bearer token.
+    
+    Flow:
+      1. Receives .pptx or .ppt file
+      2. Saves to output directory
+      3. Submits job to presentation-gg-queue (Google Drive + Google Slides)
+      4. Saves job record to MongoDB
+      5. Returns job_id + websocket URL for tracking
+    
+    Differences from /api/upload-pptx:
+      - Uses Google Drive OAuth instead of OneDrive Graph API
+      - Converts to Google Slides (native format)
+      - Uses /present URL for auto-start presentation mode
+      - Optimized prompt for Google Slides navigation
+    """
+    if not file.filename or not file.filename.lower().endswith((".pptx", ".ppt")):
+        raise HTTPException(status_code=400, detail="Only .pptx or .ppt files are accepted")
+    
+    # Read file content
+    content = await file.read()
+    if len(content) > 100 * 1024 * 1024:  # 100MB limit
+        raise HTTPException(status_code=400, detail="File too large. Maximum 100MB.")
+    
+    # Generate job ID and video name
+    job_id = str(uuid4())
+    safe_filename = sanitize_filename(file.filename)
+    video_name = f"slide_gg_{Path(safe_filename).stem}_{job_id[:8]}"
+    
+    # Save file to output directory
+    import os
+    output_dir = resolve_output_dir()
+    upload_dir = output_dir / video_name / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    file_path = upload_dir / safe_filename
+    with open(file_path, "wb") as f:
+        f.write(content)
+    
+    logger.info(f"PPTX uploaded for Google Slides: {safe_filename} ({len(content)} bytes) -> {file_path}")
+    
+    # Extract user info from token
+    user_id = user["user_id"]
+    user_email = user["email"]
+    
+    # Submit to presentation-gg-queue
+    job_data = {
+        "job_id": job_id,
+        "video_name": video_name,
+        "config": {
+            "pptx_path": str(file_path),
+            "task": task,
+            "tts_voice": tts_voice,
+            "tts_engine": tts_engine,
+            "padding_ms": padding_ms,
+            "language": language,
+            "enable_review": enable_review,
+        },
+        "job_type": "presentation_gg",
+        "user_id": user_id,
+        "user_email": user_email,
+    }
+    
+    redis_queue.push("presentation-gg-queue", job_data)
+    
+    # Build job entry for both RAM and MongoDB
+    job_entry = {
+        "job_id": job_id,
+        "status": "queued",
+        "task": task,
+        "video_name": video_name,
+        "config": job_data["config"],
+        "job_type": "presentation_gg",
+        "queue": "presentation-gg-queue",
+        "user_id": user_id,
+        "user_email": user_email,
+        "progress": None,
+        "result": None,
+        "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": None,
+        "completed_at": None,
+    }
+    async with job_queue_lock:
+        job_queue[job_id] = job_entry
+    
+    # Persist to MongoDB so frontend can see it
+    if Database.is_connected():
+        from backend.crud.jobs import create_job
+        await create_job(job_entry)
+        
+    logger.info(f"Submitted to presentation-gg-queue: {job_id} (user: {user_email})")
+    
+    return {
+        "job_id": job_id,
+        "video_name": video_name,
+        "status": "queued",
+        "file_name": file.filename,
+        "file_size": len(content),
+        "ws_url": f"/ws/{job_id}",
+        "result_url": f"/api/queue/result/{job_id}",
+        "platform": "google_slides",
     }
 
 
@@ -708,53 +1362,79 @@ class QueueJobRequest(BaseModel):
     """Request model for queue-based job submission."""
     task: str
     video_name: str = ""
-    job_type: str = "web"  # "web", "office", "os"
+    job_type: str = "web"  # "web", "office", "os", "presentation"
     config: dict = {}
+    # user_id and user_email are auto-extracted from JWT token
 
 
 @app.post("/api/queue/submit")
-async def submit_queue_job(request: QueueJobRequest):
+@limiter.limit("10/minute")
+async def submit_queue_job(request: Request, job_req: QueueJobRequest, user: dict = Depends(get_current_user)):
     """Submit a job to Redis queue for worker processing.
+    
+    Requires: Authorization header with Bearer token
     
     Routes to the correct queue based on job_type:
       - web -> web-queue (Linux Docker worker)
       - office -> office-queue (Linux Docker worker)
       - os -> os-queue (Windows worker)
+      - presentation -> presentation-queue (PowerPoint worker)
     """
     if not redis_queue.redis:
         raise HTTPException(status_code=503, detail="Redis not available. Use /api/jobs for direct execution.")
+    
+    # Check user quota
+    from backend.crud.users import check_quota, increment_quota_usage
+    
+    if not await check_quota(user["user_id"]):
+        quota = user.get("quota", {})
+        limit = quota.get("videos_per_month", 100)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Monthly quota exceeded ({limit} videos/month). Your quota will reset on {quota.get('reset_date')}."
+        )
     
     queue_map = {
         "web": "web-queue",
         "office": "office-queue",
         "os": "os-queue",
+        "presentation": "presentation-queue",
+        "presentation_gg": "presentation-gg-queue",
     }
-    queue_name = queue_map.get(request.job_type)
+    queue_name = queue_map.get(job_req.job_type)
     if not queue_name:
-        raise HTTPException(status_code=400, detail=f"Invalid job_type: {request.job_type}. Must be web, office, or os.")
+        raise HTTPException(status_code=400, detail=f"Invalid job_type: {job_req.job_type}. Must be web, office, os, presentation, or presentation_gg.")
     
     import time as _time
     job_id = str(uuid4())
-    video_name = request.video_name or f"video_{int(_time.time())}"
+    video_name = job_req.video_name or f"video_{int(_time.time())}"
+    
+    # Auto-extract user info from token (no need for client to send)
+    user_id = user["user_id"]
+    user_email = user["email"]
     
     # Push to Redis queue
     redis_queue.push(queue_name, {
         "job_id": job_id,
-        "task": request.task,
+        "task": job_req.task,
         "video_name": video_name,
-        "config": request.config,
-        "job_type": request.job_type,
+        "config": job_req.config,
+        "job_type": job_req.job_type,
+        "user_id": user_id,
+        "user_email": user_email,
     })
     
     # Also track in memory for status queries
     job_entry = {
         "job_id": job_id,
         "status": "queued",
-        "task": request.task,
+        "task": job_req.task,
         "video_name": video_name,
-        "config": request.config,
-        "job_type": request.job_type,
+        "config": job_req.config,
+        "job_type": job_req.job_type,
         "queue": queue_name,
+        "user_id": user_id,
+        "user_email": user_email,
         "progress": None,
         "result": None,
         "error": None,
@@ -765,7 +1445,15 @@ async def submit_queue_job(request: QueueJobRequest):
     async with job_queue_lock:
         job_queue[job_id] = job_entry
     
-    logger.info(f"Queue job submitted: {job_id} -> {queue_name}")
+    # Save to MongoDB
+    if Database.is_connected():
+        from backend.crud.jobs import create_job
+        await create_job(job_entry)
+    
+    # Increment quota usage
+    await increment_quota_usage(user_id)
+    
+    logger.info(f"Queue job submitted: {job_id} -> {queue_name} (user: {user_email})")
     
     return {
         "job_id": job_id,

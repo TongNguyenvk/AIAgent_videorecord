@@ -237,67 +237,42 @@ def record_video_with_webreel(config: dict, config_path: Path, video_name: str, 
 
     start_time = time.time()
 
-    # Use Popen so we can kill the process on cancel.
-    # IMPORTANT: We use threads to drain stdout/stderr continuously to prevent
-    # a deadlock where the child process blocks because the OS pipe buffer is
-    # full (typically 4KB-64KB) while the parent waits for the child to finish.
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        shell=True,
-        cwd=str(REPO_ROOT),
-        env=env,
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
-    )
+    # Redirect output to a log file to avoid pipe deadlock
+    log_file_path = config_path.parent / f"webreel_run_{int(start_time)}.log"
+    with open(log_file_path, "wb") as log_file:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            shell=True,
+            cwd=str(REPO_ROOT),
+            env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+        )
 
-    # Drain stdout/stderr in background threads to prevent pipe buffer deadlock
-    import threading
-    stdout_chunks = []
-    stderr_chunks = []
-
-    def _drain_pipe(pipe, chunks):
-        """Read from pipe until EOF, appending to chunks list."""
-        try:
-            while True:
-                data = pipe.read(4096)
-                if not data:
-                    break
-                chunks.append(data)
-        except Exception:
-            pass
-
-    stdout_thread = threading.Thread(target=_drain_pipe, args=(proc.stdout, stdout_chunks), daemon=True)
-    stderr_thread = threading.Thread(target=_drain_pipe, args=(proc.stderr, stderr_chunks), daemon=True)
-    stdout_thread.start()
-    stderr_thread.start()
-
-    # Poll loop: check cancel_event every 0.5s
-    cancelled = False
-    while proc.poll() is None:
-        if cancel_event and cancel_event.is_set():
-            logger.info("Cancel requested, killing webreel subprocess...")
-            _kill_process_tree(proc.pid)
-            cancelled = True
-            break
-        time.sleep(0.5)
-
-    # Wait for drain threads to finish (they will EOF when process exits)
-    stdout_thread.join(timeout=5)
-    stderr_thread.join(timeout=5)
+        # Poll loop: check cancel_event every 0.5s
+        cancelled = False
+        while proc.poll() is None:
+            if cancel_event and cancel_event.is_set():
+                logger.info("Cancel requested, killing webreel subprocess...")
+                _kill_process_tree(proc.pid)
+                cancelled = True
+                break
+            time.sleep(0.5)
 
     elapsed = time.time() - start_time
 
     if cancelled:
         raise asyncio.CancelledError("Webreel recording cancelled by user")
 
-    stdout_data = b"".join(stdout_chunks).decode("utf-8", errors="replace")
-    stderr_data = b"".join(stderr_chunks).decode("utf-8", errors="replace")
-
-    if stdout_data:
-        logger.info(f"[webreel stdout]:\n{stdout_data}")
-    if stderr_data:
-        logger.info(f"[webreel stderr]:\n{stderr_data}")
+    # Read the log file contents to print out
+    try:
+        with open(log_file_path, "r", encoding="utf-8", errors="replace") as f:
+            log_data = f.read().strip()
+        if log_data:
+            logger.info(f"[webreel output]:\n{log_data}")
+    except Exception as e:
+        logger.warning(f"Could not read webreel log file: {e}")
 
     if proc.returncode != 0:
         logger.error(f"webreel failed (exit code {proc.returncode}) after {elapsed:.1f}s")

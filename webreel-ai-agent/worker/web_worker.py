@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -28,6 +29,14 @@ sys.path.insert(0, str(AGENT_DIR))
 
 from backend.queue import JobQueue
 
+# Import worker exceptions
+sys.path.insert(0, str(AGENT_DIR / "worker"))
+try:
+    from exceptions import SessionExpiredError
+except ImportError:
+    class SessionExpiredError(Exception):
+        pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s - %(message)s",
@@ -38,6 +47,9 @@ logger = logging.getLogger("web_worker")
 QUEUE_NAME = os.getenv("WORKER_QUEUE", "web-queue")
 POLL_TIMEOUT = int(os.getenv("POLL_TIMEOUT", "5"))
 WORKER_ID = os.getenv("WORKER_ID", f"web-worker-{os.getpid()}")
+
+# Chrome profile directory
+CHROME_PROFILE_DIR = os.getenv("CHROME_PROFILE_DIR", "/app/chrome_profile")
 
 # Chrome process reference
 _chrome_proc = None
@@ -77,17 +89,27 @@ def launch_chrome(port: int = 9222) -> subprocess.Popen:
         "--disable-translate",
         "--disable-infobars",
         "--disable-blink-features=AutomationControlled", # Hide webdriver flag
+        # Stability flags to prevent Chrome crash during long sessions
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-features=VizDisplayCompositor,TranslateUI",
+        "--disable-hang-monitor",
+        "--disable-ipc-flooding-protection",
+        "--disable-component-update",
+        "--memory-pressure-off",
+        "--js-flags=--max-old-space-size=1024",
         f"--remote-debugging-address=0.0.0.0",
         f"--remote-debugging-port={port}",
         "--remote-allow-origins=*",
         "--window-position=0,0",
         "--window-size=1920,1080",
         "--start-maximized",
-        "--user-data-dir=/app/chrome_profile",  # Persistent profile (safe: one Chrome per container)
+        f"--user-data-dir={CHROME_PROFILE_DIR}",
         "about:blank",
     ]
 
-    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # Wait for Chrome to be ready (up to 15s)
     import urllib.request
@@ -100,10 +122,9 @@ def launch_chrome(port: int = 9222) -> subprocess.Popen:
         except Exception:
             time.sleep(0.5)
 
-    # Chrome failed to start, check stderr
+    # Chrome failed to start
     proc.terminate()
-    _, stderr = proc.communicate(timeout=5)
-    raise RuntimeError(f"Chrome failed to start within 15s. stderr: {stderr.decode()[:500]}")
+    raise RuntimeError("Chrome failed to start within 15s CDP timeout.")
 
 
 def kill_chrome():
@@ -144,6 +165,28 @@ async def process_job(job: dict) -> dict:
 
         cdp_url = os.getenv("CHROME_CDP_URL", config.get("cdp_url", "http://localhost:9222"))
 
+        from backend.queue import JobQueue
+        queue_client = JobQueue()
+
+        async def progress_callback(phase: float, message: str, data: any = None):
+            queue_client.notify_api_progress(job_id, phase, message, data)
+            
+            if phase == 2.5 and config.get("enable_review", True):
+                queue_client.redis.set(f"job:{job_id}:status", "pending_review", ex=86400)
+                queue_client.notify_api_progress(job_id, phase, "Waiting for user review", data)
+                
+                logger.info(f"Job {job_id} waiting for Phase 2.5 review...")
+                approved_script = await queue_client.wait_for_review(job_id, timeout_seconds=1800)
+                
+                queue_client.redis.set(f"job:{job_id}:status", "processing", ex=86400)
+                if approved_script:
+                    logger.info(f"Job {job_id} review approved. Resuming pipeline.")
+                    return approved_script
+                else:
+                    logger.warning(f"Job {job_id} review timed out. Resuming with default script.")
+                    return None
+            return None
+
         video_path = await run_pipeline_v3(
             task=task,
             video_name=video_name,
@@ -152,8 +195,10 @@ async def process_job(job: dict) -> dict:
             tts_voice=config.get("tts_voice", "banmai"),
             tts_engine=config.get("tts_engine", "edge"),
             padding_ms=config.get("padding_ms", 300),
-            enable_review=False,
+            enable_review=config.get("enable_review", True),
             job_id=job_id,
+            agent_mode="web_tutorial",
+            progress_callback=progress_callback,
         )
 
         return {
@@ -161,6 +206,26 @@ async def process_job(job: dict) -> dict:
             "job_id": job_id,
             "video_path": str(video_path),
             "video_name": video_name,
+            "completed_at": time.time(),
+            "worker_id": WORKER_ID,
+        }
+
+    except SessionExpiredError as e:
+        logger.error(f"Job {job_id} failed: Session expired - {e}", exc_info=True)
+        # Circuit Breaker: pause the queue
+        queue_client = JobQueue()
+        queue_client.pause_queue(QUEUE_NAME, f"session_expired: {e}")
+        queue_client.redis.publish("session-expired", json.dumps({
+            "queue": QUEUE_NAME,
+            "job_id": job_id,
+            "error": str(e),
+            "timestamp": time.time(),
+        }))
+        return {
+            "status": "failed",
+            "job_id": job_id,
+            "error": f"SESSION_EXPIRED: {e}",
+            "error_type": "session_expired",
             "completed_at": time.time(),
             "worker_id": WORKER_ID,
         }
@@ -177,44 +242,75 @@ async def process_job(job: dict) -> dict:
 
 
 def run_worker():
-    """Main worker loop - polls Redis queue and processes jobs."""
+    """Main worker - polls Redis queue, processes ONE job, then exits.
+
+    In single-job mode (default), the container is launched per-job by the
+    autoscaler and exits after completion so Docker can clean it up.
+    """
     global _chrome_proc
 
-    # Launch Chrome (built into the container via Playwright)
-    try:
-        _chrome_proc = launch_chrome(port=9222)
-    except Exception as e:
-        logger.error(f"Failed to launch Chrome: {e}")
-        logger.warning("Worker will try to use external Chrome if available")
+    # Chrome is launched on-demand when a job arrives, not at startup.
+    # This keeps the container lightweight until work is needed.
+    logger.info("Chrome will be launched on-demand when a job arrives")
 
     # Register cleanup
     import atexit
     atexit.register(kill_chrome)
 
     queue = JobQueue()
+    container_name = socket.gethostname()
 
-    logger.info(f"Worker {WORKER_ID} started")
+    logger.info(f"Worker {WORKER_ID} started (container: {container_name})")
     logger.info(f"Queue: {QUEUE_NAME}")
     logger.info(f"Redis: {queue._sanitize_url(queue.redis_url)}")
     logger.info(f"Poll timeout: {POLL_TIMEOUT}s")
-    logger.info("Waiting for jobs...")
+    logger.info("Waiting for a job...")
+
+    def is_chrome_alive():
+        """Check if Chrome CDP is responsive."""
+        import urllib.request
+        try:
+            resp = urllib.request.urlopen("http://localhost:9222/json/version", timeout=2)
+            return resp.status == 200
+        except Exception:
+            return False
 
     while True:
         try:
-            # Check if Chrome is still alive
-            if _chrome_proc and _chrome_proc.poll() is not None:
-                logger.warning("Chrome process died! Restarting...")
-                try:
-                    _chrome_proc = launch_chrome(port=9222)
-                except Exception as e:
-                    logger.error(f"Chrome restart failed: {e}")
-
             job = queue.poll(QUEUE_NAME, timeout=POLL_TIMEOUT)
             if job is None:
                 continue
 
             job_id = job.get("job_id", "unknown")
             logger.info(f"Picked up Job {job_id} from {QUEUE_NAME}")
+
+            # Register this container as the worker for this job (for kill support)
+            queue.register_worker(job_id, container_name)
+
+            # Ensure Chrome is running before processing job
+            if not is_chrome_alive():
+                logger.info("Chrome not running. Starting for job...")
+                try:
+                    if _chrome_proc and _chrome_proc.poll() is None:
+                        _chrome_proc.terminate()
+                        try:
+                            _chrome_proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            _chrome_proc.kill()
+                    _chrome_proc = launch_chrome(port=9222)
+                    logger.info("Chrome started successfully")
+                except Exception as e:
+                    logger.error(f"Chrome start failed: {e}")
+                    queue.set_result(job_id, {
+                        "status": "failed",
+                        "error": f"Chrome failed to start: {e}",
+                        "failed_at": time.time(),
+                        "worker_id": WORKER_ID,
+                    })
+                    queue.ack(QUEUE_NAME, job)
+                    queue.notify_api(job_id)
+                    queue.unregister_worker(job_id)
+                    break
 
             # Run async pipeline
             result = asyncio.run(process_job(job))
@@ -225,9 +321,14 @@ def run_worker():
 
             # Notify API via pub/sub
             queue.notify_api(job_id)
+            queue.unregister_worker(job_id)
 
             status = result.get("status", "unknown")
             logger.info(f"Job {job_id} -> {status}")
+
+            # Single-job mode: exit after processing one job
+            logger.info(f"Single-job mode: exiting after job {job_id}")
+            break
 
         except KeyboardInterrupt:
             logger.info("Worker shutting down (Ctrl+C)")

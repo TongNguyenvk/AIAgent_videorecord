@@ -61,6 +61,14 @@ export interface StepInjectType {
   description?: string;
 }
 
+export interface StepEvaluate {
+  action: "evaluate";
+  expression: string;
+  label?: string;
+  delay?: number;
+  description?: string;
+}
+
 export interface StepScroll {
   action: "scroll";
   x?: number;
@@ -144,7 +152,8 @@ export type Step =
   | StepNavigate
   | StepHover
   | StepSelect
-  | StepInjectType;
+  | StepInjectType
+  | StepEvaluate;
 
 export interface CursorConfig {
   image?: string;

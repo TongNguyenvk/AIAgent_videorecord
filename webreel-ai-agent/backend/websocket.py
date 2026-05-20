@@ -25,6 +25,8 @@ class ConnectionManager:
         """Initialize the connection manager with empty connection dictionary."""
         # Dictionary mapping job_id to list of WebSocket connections
         self.active_connections: Dict[str, List[WebSocket]] = {}
+        # Global connections (không gắn với job cụ thể, dùng cho Circuit Breaker alerts)
+        self.global_connections: List[WebSocket] = []
     
     async def connect(self, job_id: str, websocket: WebSocket) -> None:
         """
@@ -130,6 +132,40 @@ class ConnectionManager:
                     extra={"job_id": job_id},
                     exc_info=True
                 )
+
+    async def broadcast_global(self, message: dict) -> None:
+        """
+        Gửi thông báo tới TẤT CẢ WebSocket connections (tất cả jobs).
+
+        Dùng cho Circuit Breaker alerts khi session hết hạn, cần thông báo
+        cho mọi client đang kết nối, không giới hạn theo job cụ thể.
+
+        Args:
+            message: Dictionary message to send (will be serialized to JSON)
+        """
+        all_connections = []
+        for job_id, connections in self.active_connections.items():
+            all_connections.extend(connections)
+
+        if not all_connections:
+            return
+
+        failed = []
+        for connection in all_connections:
+            try:
+                await connection.send_json(message)
+            except Exception as e:
+                logger.warning(f"Failed to broadcast global message: {e}")
+                failed.append(connection)
+
+        # Dọn dẹp connections bị lỗi
+        for connection in failed:
+            for job_id, connections in list(self.active_connections.items()):
+                if connection in connections:
+                    connections.remove(connection)
+                    if not connections:
+                        del self.active_connections[job_id]
+                    break
 
 
 # Global connection manager instance

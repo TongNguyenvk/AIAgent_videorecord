@@ -223,18 +223,18 @@ def convert_history_to_config_and_script(
                     "description": f"Navigate to {url}"
                 })
                 
-                # CRITICAL: OneDrive/Outlook URLs need 15 seconds to fully load PowerPoint Online
+                # CRITICAL: OneDrive/Outlook URLs need 20 seconds to fully load PowerPoint Online
                 # Regular pages only need 3 seconds
                 is_onedrive_url = any(domain in url.lower() for domain in [
                     "onedrive.live.com", "outlook.live.com", "office.live.com",
                     "1drv.ms", "sharepoint.com"
                 ])
-                wait_ms = 15000 if is_onedrive_url else 3000
+                wait_ms = 20000 if is_onedrive_url else 3000
                 
                 steps.append({
                     "action": "pause",
                     "ms": wait_ms,
-                    "description": f"Wait for page to load ({'OneDrive - 15s' if is_onedrive_url else '3s'})"
+                    "description": f"Wait for page to load ({'OneDrive - 20s' if is_onedrive_url else '3s'})"
                 })
             elif url == start_url:
                 navigated_to_start = True
@@ -586,6 +586,38 @@ def convert_history_to_config_and_script(
                 steps.append({"action": "pause", "ms": 2000})
 
         # ===== done, write_file, etc. -> SKIP =====
+
+    # ===== DEDUPLICATION: Remove consecutive duplicate key presses =====
+    # This prevents agent loop spam (e.g., 16x Escape in a row)
+    deduplicated_steps = []
+    last_key_action = None
+    consecutive_count = 0
+    MAX_CONSECUTIVE_KEYS = 3  # Allow max 3 consecutive identical key presses
+    
+    for step in steps:
+        # Track consecutive key presses
+        if step.get("action") == "key":
+            current_key = step.get("key")
+            if current_key == last_key_action:
+                consecutive_count += 1
+                if consecutive_count > MAX_CONSECUTIVE_KEYS:
+                    logger.warning(f"[V3 Parser] Skipping duplicate key press #{consecutive_count}: {current_key}")
+                    continue  # Skip this duplicate
+            else:
+                last_key_action = current_key
+                consecutive_count = 1
+        else:
+            # Reset counter on non-key actions
+            last_key_action = None
+            consecutive_count = 0
+        
+        deduplicated_steps.append(step)
+    
+    removed_count = len(steps) - len(deduplicated_steps)
+    if removed_count > 0:
+        logger.info(f"[V3 Parser] Removed {removed_count} duplicate key presses (agent loop spam)")
+    
+    steps = deduplicated_steps
 
     # Add tail pause to prevent video cut-off
     steps.append({

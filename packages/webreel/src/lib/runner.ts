@@ -40,7 +40,7 @@ export function formatStep(i: number, step: Step): string {
   const formatSelector = (sel: string | string[] | undefined) => {
     if (!sel) return "";
     if (Array.isArray(sel)) {
-      return sel.length === 1 ? sel[0] : `[${sel.map(s => `"${s}"`).join(' OR ')}]`;
+      return sel.length === 1 ? sel[0] : `[${sel.map((s) => `"${s}"`).join(" OR ")}]`;
     }
     return sel;
   };
@@ -72,6 +72,8 @@ export function formatStep(i: number, step: Step): string {
       return `[step ${i}] select "${step.selector}" value="${step.value}"${desc}`;
     case "inject_type":
       return `[step ${i}] inject_type "${step.text}"${step.selector ? ` selector="${formatSelector(step.selector)}"` : ""}${desc}`;
+    case "evaluate":
+      return `[step ${i}] evaluate JS${desc}`;
     default: {
       const _exhaustive: never = step;
       return `[step ${i}] ${(_exhaustive as Step).action}`;
@@ -92,7 +94,7 @@ async function resolveTarget(
   if (!opts.text && !opts.selector) {
     throw new Error(`resolveTarget requires "text" or "selector"`);
   }
-  
+
   const start = Date.now();
   let box: BoundingBox | null = null;
   let matchedSelector: string | undefined;
@@ -119,7 +121,7 @@ async function resolveTarget(
     if (opts.text) {
       target = `text="${opts.text}"`;
     } else if (Array.isArray(opts.selector)) {
-      target = `selectors=[${opts.selector.map(s => `"${s}"`).join(', ')}] (tried all, none matched)`;
+      target = `selectors=[${opts.selector.map((s) => `"${s}"`).join(", ")}] (tried all, none matched)`;
     } else {
       target = `selector="${opts.selector}"`;
     }
@@ -188,7 +190,7 @@ export async function runVideo(
   if (config.clickDwell !== undefined) ctx.setClickDwell(config.clickDwell);
   const initialCursor = ctx.getCursorPosition();
 
-  const chrome = await launchChrome({ 
+  const chrome = await launchChrome({
     headless: shouldRecord,
     profile: config.profile,
     cdpUrl: config.cdpUrl,
@@ -197,7 +199,9 @@ export async function runVideo(
   let recorder: Recorder | null = null;
 
   try {
-    const client = config.cdpUrl ? await connectCDPUrl(config.cdpUrl) : await connectCDP(chrome.port);
+    const client = config.cdpUrl
+      ? await connectCDPUrl(config.cdpUrl)
+      : await connectCDP(chrome.port);
     clientRef = client;
     await client.Page.enable();
     await client.Runtime.enable();
@@ -238,7 +242,12 @@ export async function runVideo(
       if (typeof config.waitFor === "string") {
         await waitForSelector(client, config.waitFor);
       } else if (config.waitFor.selector) {
-        await waitForSelector(client, config.waitFor.selector, 30000, config.waitFor.within);
+        await waitForSelector(
+          client,
+          config.waitFor.selector,
+          30000,
+          config.waitFor.within,
+        );
       } else if (config.waitFor.text) {
         await waitForText(client, config.waitFor.text, config.waitFor.within);
       }
@@ -341,8 +350,12 @@ export async function runVideo(
             if (step.target) {
               const sel = resolveKeyTarget(step.target);
               if (sel) {
-                const { matchedSelector } = await resolveTarget(client, { selector: sel });
-                const expr = buildElementExpression(matchedSelector || (Array.isArray(sel) ? sel[0] : sel));
+                const { matchedSelector } = await resolveTarget(client, {
+                  selector: sel,
+                });
+                const expr = buildElementExpression(
+                  matchedSelector || (Array.isArray(sel) ? sel[0] : sel),
+                );
                 await client.Runtime.evaluate({
                   expression: `${expr}?.focus()`,
                 });
@@ -362,12 +375,19 @@ export async function runVideo(
 
           case "type": {
             if (step.selector) {
-              const { box, matchedSelector } = await resolveTarget(client, { selector: step.selector, within: step.within });
+              const { box, matchedSelector } = await resolveTarget(client, {
+                selector: step.selector,
+                within: step.within,
+              });
               await waitForInteractive(client, box);
               const { x: tx, y: ty } = randomPointInBox(box);
               await clickAt(ctx, client, tx, ty);
-              
-              const expr = buildElementExpression(matchedSelector || (Array.isArray(step.selector) ? step.selector[0] : step.selector), step.within);
+
+              const expr = buildElementExpression(
+                matchedSelector ||
+                  (Array.isArray(step.selector) ? step.selector[0] : step.selector),
+                step.within,
+              );
               await client.Runtime.evaluate({
                 expression: `(() => {
                   const el = ${expr};
@@ -387,8 +407,15 @@ export async function runVideo(
             const scrollX = step.x ?? 0;
             const scrollY = step.y ?? 0;
             if (step.selector) {
-              const { matchedSelector } = await resolveTarget(client, { selector: step.selector, within: step.within });
-              const expr = buildElementExpression(matchedSelector || (Array.isArray(step.selector) ? step.selector[0] : step.selector), step.within);
+              const { matchedSelector } = await resolveTarget(client, {
+                selector: step.selector,
+                within: step.within,
+              });
+              const expr = buildElementExpression(
+                matchedSelector ||
+                  (Array.isArray(step.selector) ? step.selector[0] : step.selector),
+                step.within,
+              );
               await client.Runtime.evaluate({
                 expression: `(() => {
                   const target = ${expr};
@@ -453,8 +480,15 @@ export async function runVideo(
 
           case "select": {
             if (step.selector) {
-              const { matchedSelector } = await resolveTarget(client, { selector: step.selector, within: step.within });
-              const expr = buildElementExpression(matchedSelector || (Array.isArray(step.selector) ? step.selector[0] : step.selector), step.within);
+              const { matchedSelector } = await resolveTarget(client, {
+                selector: step.selector,
+                within: step.within,
+              });
+              const expr = buildElementExpression(
+                matchedSelector ||
+                  (Array.isArray(step.selector) ? step.selector[0] : step.selector),
+                step.within,
+              );
               await client.Runtime.evaluate({
                 expression: `(() => {
                   const el = ${expr};
@@ -485,6 +519,14 @@ export async function runVideo(
             await injectType(ctx, client, step.text, step.selector, step.within);
             break;
           }
+
+          case "evaluate": {
+            await client.Runtime.evaluate({
+              expression: step.expression,
+              awaitPromise: true,
+            });
+            break;
+          }
         }
         const stepDelay = "delay" in step ? step.delay : undefined;
         const postDelay = stepDelay ?? config.defaultDelay;
@@ -497,7 +539,10 @@ export async function runVideo(
         executionTrace.push({
           step_index: i,
           action_type: step.action,
-          description: "description" in step ? (step as { description?: string }).description : undefined,
+          description:
+            "description" in step
+              ? (step as { description?: string }).description
+              : undefined,
           start_time_ms: stepStartMs,
           end_time_ms: stepEndMs,
         });
@@ -507,7 +552,10 @@ export async function runVideo(
         executionTrace.push({
           step_index: i,
           action_type: step.action,
-          description: "description" in step ? (step as { description?: string }).description : undefined,
+          description:
+            "description" in step
+              ? (step as { description?: string }).description
+              : undefined,
           start_time_ms: stepStartMs,
           end_time_ms: stepEndMs,
         });

@@ -37,6 +37,15 @@ webreel-ai-agent/browser-use/
 *.png
 !examples/**/*.png
 
+# Google Drive Service Account keys (NEVER COMMIT)
+key/
+webreel-ai-agent/key/
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!.changeset/*.json
+
 # Test files
 test_*.py
 *_test.py

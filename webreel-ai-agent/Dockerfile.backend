@@ -26,7 +26,7 @@ RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula sele
     poppler-utils \
     xvfb xauth \
     x11vnc novnc websockify \
-    && npm install -g pnpm \
+    && npm install -g pnpm@9.15.0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -34,11 +34,6 @@ RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula sele
 COPY webreel-ai-agent/requirements.docker.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
-
-# 2.5 Install Chromium via Playwright (standard CDP, no Browserless needed)
-RUN pip install --no-cache-dir playwright && \
-    playwright install chromium --with-deps && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 3. Copy Webreel Node packages (pre-built dist/ from local)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./

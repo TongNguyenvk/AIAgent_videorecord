@@ -1,0 +1,100 @@
+# ============================================================
+# WebReel Workers - Production
+# Redis Queue Workers with Playwright + Chrome
+# ============================================================
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app/webreel-ai-agent \
+    NODE_ENV=production \
+    FFMPEG_PATH=/usr/bin/ffmpeg \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+
+# 1. Install System Dependencies, Node.js, LibreOffice + Fonts
+RUN echo "ttf-mscorefonts-installer msttcorefonts/accepted-mscorefonts-eula select true" | debconf-set-selections && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+    curl ca-certificates ffmpeg git nodejs npm \
+    libreoffice-impress \
+    fonts-liberation fonts-noto-cjk \
+    poppler-utils \
+    xvfb xauth \
+    x11vnc novnc websockify \
+    && npm install -g pnpm@9.15.0 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Install Python Dependencies (Linux-only, no pywin32/pywinauto)
+COPY webreel-ai-agent/requirements.docker.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
+
+# 2.5 Install Chromium via Playwright (workers need browser)
+RUN pip install --no-cache-dir playwright && \
+    playwright install chromium --with-deps && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 3. Copy Webreel Node packages (pre-built dist/ from local)
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages/@webreel/core/package.json ./packages/@webreel/core/
+COPY packages/webreel/package.json ./packages/webreel/
+COPY packages/@webreel/core/src ./packages/@webreel/core/src
+COPY packages/@webreel/core/dist ./packages/@webreel/core/dist
+COPY packages/webreel/src ./packages/webreel/src
+COPY packages/webreel/dist ./packages/webreel/dist
+
+RUN pnpm install --frozen-lockfile --prod --ignore-scripts && \
+    pnpm rebuild sharp
+
+# 4. Copy application source code
+# Backend
+COPY webreel-ai-agent/backend ./webreel-ai-agent/backend
+COPY webreel-ai-agent/frontend_web ./webreel-ai-agent/frontend_web
+
+# Pipeline entry point + dependencies
+COPY webreel-ai-agent/run_pipeline.py ./webreel-ai-agent/
+
+# v3/ modules (bu_to_webreel, audio_injector) - used by run_pipeline.py
+COPY webreel-ai-agent/v3 ./webreel-ai-agent/v3
+
+# src/ modules (trace_composer, tts, webreel_runner) - used by run_pipeline.py
+COPY webreel-ai-agent/src ./webreel-ai-agent/src
+
+# browser-use (agent framework)
+COPY webreel-ai-agent/browser-use ./webreel-ai-agent/browser-use
+
+# shared/ (canonical modules for future migration)
+COPY webreel-ai-agent/shared ./webreel-ai-agent/shared
+
+# desktop_app/ (production pipeline, TTS, webreel_runner)
+COPY webreel-ai-agent/desktop_app ./webreel-ai-agent/desktop_app
+
+# worker/ (Redis queue workers)
+COPY webreel-ai-agent/worker ./webreel-ai-agent/worker
+
+# .env
+COPY webreel-ai-agent/.env.example ./webreel-ai-agent/.env
+
+RUN mkdir -p /app/output /app/chrome_profile
+
+# Entrypoint script (Xvfb + VNC + noVNC)
+COPY webreel-ai-agent/scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Session Manager start script
+COPY webreel-ai-agent/scripts/session-manager-start.sh /app/scripts/session-manager-start.sh
+RUN chmod +x /app/scripts/session-manager-start.sh
+
+# Session Manager internal API
+COPY webreel-ai-agent/session_manager /app/webreel-ai-agent/session_manager
+
+# Workers don't expose HTTP ports, only process Redis queues
+HEALTHCHECK NONE
+
+CMD ["python", "-m", "worker.web_worker"]

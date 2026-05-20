@@ -1,20 +1,23 @@
 """
-Auto-scaler for WebReel workers.
+Auto-scaler for WebReel workers (1 Worker = 1 Job).
 
 Event-driven scaling using Redis Pub/Sub:
-  - Instantly reacts when new jobs arrive (no polling delay)
-  - Scales DOWN after idle period (periodic check)
-  - Respects max worker limit based on available RAM
+  - Listens for new-job events and launches a dedicated container per job.
+  - Listens for job-kill events and stops the target container.
+  - Each worker container processes exactly ONE job then exits.
+  - Containers are launched via `docker compose run --rm` so they auto-remove.
 
-Usage (inside Docker):
+Usage (inside Docker with access to /var/run/docker.sock):
     python -m worker.autoscaler
 
 Environment:
     REDIS_URL          - Redis connection string
-    MAX_WORKERS        - Maximum concurrent workers (default: 4)
-    MIN_WORKERS        - Minimum workers to keep alive (default: 0)
-    IDLE_TIMEOUT       - Seconds of empty queue before scaling down (default: 300)
-    COMPOSE_PROJECT    - Docker compose project name (default: webreel-ai-agent)
+    MAX_WEB_WORKERS    - Max concurrent web workers (default: 2)
+    MAX_PRES_WORKERS   - Max concurrent presentation workers (default: 2)
+    MAX_PRES_GG_WORKERS - Max concurrent presentation-gg workers (default: 2)
+    MAX_OFFICE_WORKERS - Max concurrent office workers (default: 2)
+    COMPOSE_FILE       - Path to docker-compose.prod.yml
+    COMPOSE_PROJECT    - Docker compose project name
 """
 
 import json
@@ -38,179 +41,322 @@ logging.basicConfig(
 )
 logger = logging.getLogger("autoscaler")
 
-# Configuration
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "4"))
-MIN_WORKERS = int(os.getenv("MIN_WORKERS", "0"))
-IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", "300"))  # 5 minutes
+# Compose configuration
 COMPOSE_FILE = os.getenv("COMPOSE_FILE", "docker-compose.prod.yml")
 COMPOSE_PROJECT = os.getenv("COMPOSE_PROJECT", "webreel-ai-agent")
-WORKER_SERVICE = os.getenv("WORKER_SERVICE", "web-worker")
+
+
+def _compose_base_cmd() -> list[str]:
+    """Build the base docker compose command."""
+    return ["docker", "compose", "-f", COMPOSE_FILE, "-p", COMPOSE_PROJECT]
+
+
+def _detect_host_project_dir() -> str:
+    """Auto-detect the HOST project directory from existing container labels.
+
+    Reads com.docker.compose.project.working_dir from a running container
+    in the same compose project. This is the absolute path on the HOST where
+    docker-compose.prod.yml lives, needed so worker volume mounts (e.g.
+    ${HOST_PROJECT_DIR:-.}/output) resolve correctly.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "docker", "ps",
+                "--filter", f"label=com.docker.compose.project={COMPOSE_PROJECT}",
+                "--format", "{{.ID}}",
+                "-n", "1",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            cid = result.stdout.strip().split("\n")[0]
+            inspect = subprocess.run(
+                ["docker", "inspect", cid, "--format",
+                 "{{index .Config.Labels \"com.docker.compose.project.working_dir\"}}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if inspect.returncode == 0 and inspect.stdout.strip():
+                return inspect.stdout.strip()
+    except Exception as e:
+        logger.warning(f"Failed to detect host project dir: {e}")
+    return ""
+
+# Per-queue worker limits
+QUEUE_CONFIG = {
+    "web-queue": {
+        "service": "web-worker",
+        "max_workers": int(os.getenv("MAX_WEB_WORKERS", "2")),
+    },
+    "presentation-queue": {
+        "service": "presentation-worker",
+        "max_workers": int(os.getenv("MAX_PRES_WORKERS", "2")),
+    },
+    "presentation-gg-queue": {
+        "service": "presentation-gg-worker",
+        "max_workers": int(os.getenv("MAX_PRES_GG_WORKERS", "2")),
+    },
+    "office-queue": {
+        "service": "office-worker",
+        "max_workers": int(os.getenv("MAX_OFFICE_WORKERS", "2")),
+    },
+}
 
 
 class AutoScaler:
-    """Event-driven auto-scaler for Docker Compose workers."""
+    """Event-driven auto-scaler: 1 container per job."""
 
     def __init__(self):
         self.queue = JobQueue()
-        self.current_scale = 0
-        self.last_job_time = time.time()
         self._lock = threading.Lock()
+        # Auto-detect the HOST path where compose project lives.
+        # This is injected as HOST_PROJECT_DIR into `docker compose run`
+        # so volume paths like ${HOST_PROJECT_DIR:-.}/output resolve to
+        # absolute host paths instead of paths inside the autoscaler container.
+        self._host_project_dir = _detect_host_project_dir()
+        if self._host_project_dir:
+            logger.info(f"  Host project dir: {self._host_project_dir}")
+        else:
+            logger.warning("Could not detect host project dir. Volume mounts may fail.")
 
-    def get_queue_depth(self) -> dict:
-        """Get total jobs waiting + processing across all queues."""
-        stats = self.queue.get_all_queue_stats()
-        total_waiting = sum(q.get("waiting", 0) for q in stats.values())
-        total_processing = sum(q.get("processing", 0) for q in stats.values())
-        return {
-            "waiting": total_waiting,
-            "processing": total_processing,
-            "total": total_waiting + total_processing,
-        }
+    def _get_compose_env(self) -> dict:
+        """Build environment dict for subprocess calls to docker compose.
 
-    def get_current_worker_count(self) -> int:
-        """Get number of running worker containers."""
+        Inherits current env and adds HOST_PROJECT_DIR so the compose file
+        can resolve volume paths correctly.
+        """
+        env = os.environ.copy()
+        if self._host_project_dir:
+            env["HOST_PROJECT_DIR"] = self._host_project_dir
+        return env
+
+    # ------------------------------------------------------------------
+    # Container management
+    # ------------------------------------------------------------------
+
+    def count_running_containers(self, service: str) -> int:
+        """Count running containers for a given compose service."""
         try:
             result = subprocess.run(
                 [
-                    "docker", "compose",
-                    "-f", COMPOSE_FILE,
-                    "-p", COMPOSE_PROJECT,
-                    "ps", "--format", "json",
-                    WORKER_SERVICE,
+                    "docker", "ps",
+                    "--filter", f"label=com.docker.compose.service={service}",
+                    "--filter", f"label=com.docker.compose.project={COMPOSE_PROJECT}",
+                    "--filter", "status=running",
+                    "--format", "{{.ID}}",
                 ],
                 capture_output=True, text=True, timeout=10,
             )
-            if result.returncode == 0 and result.stdout.strip():
-                lines = result.stdout.strip().split("\n")
-                running = 0
-                for line in lines:
-                    try:
-                        container = json.loads(line)
-                        if container.get("State") == "running":
-                            running += 1
-                    except json.JSONDecodeError:
-                        pass
-                return running
+            if result.returncode == 0:
+                lines = [l.strip() for l in result.stdout.strip().split("\n") if l.strip()]
+                return len(lines)
         except Exception as e:
-            logger.warning(f"Failed to get worker count: {e}")
-        return self.current_scale
+            logger.warning(f"Failed to count containers for {service}: {e}")
+        return 0
 
-    def scale_workers(self, count: int):
-        """Scale workers to the specified count."""
-        count = max(MIN_WORKERS, min(count, MAX_WORKERS))
+    def launch_worker(self, service: str, job_id: str) -> bool:
+        """Launch a new worker container for a specific job.
 
-        if count == self.current_scale:
-            return
+        Uses `docker compose run -d --rm` to create an ephemeral container
+        that auto-removes when it exits.
+        """
+        container_name = f"webreel-{service}-{job_id[:8]}"
 
-        logger.info(f"Scaling {WORKER_SERVICE}: {self.current_scale} -> {count}")
+        logger.info(f"Launching {service} container: {container_name} for job {job_id}")
 
         try:
+            cmd = _compose_base_cmd() + [
+                "run", "-d", "--rm",
+                "--name", container_name,
+                service,
+            ]
+
             result = subprocess.run(
-                [
-                    "docker", "compose",
-                    "-f", COMPOSE_FILE,
-                    "-p", COMPOSE_PROJECT,
-                    "up", "-d",
-                    "--scale", f"{WORKER_SERVICE}={count}",
-                    "--no-recreate",
-                    WORKER_SERVICE,
-                ],
-                capture_output=True, text=True, timeout=60,
+                cmd,
+                capture_output=True, text=True, timeout=30,
+                env=self._get_compose_env(),
             )
 
             if result.returncode == 0:
-                self.current_scale = count
-                logger.info(f"Scaled to {count} workers")
+                logger.info(f"Container {container_name} launched successfully")
+                return True
             else:
-                logger.error(f"Scale failed: {result.stderr}")
+                logger.error(
+                    f"Failed to launch {container_name}: {result.stderr.strip()}"
+                )
+                return False
 
         except Exception as e:
-            logger.error(f"Scale error: {e}")
+            logger.error(f"Error launching {container_name}: {e}")
+            return False
 
-    def handle_new_job(self):
-        """Called when a new job arrives. Scale up if needed."""
+    def stop_container(self, container_name: str) -> bool:
+        """Stop a running container by name or ID."""
+        logger.info(f"Stopping container: {container_name}")
+        try:
+            result = subprocess.run(
+                ["docker", "stop", container_name],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                logger.info(f"Container {container_name} stopped")
+                return True
+            else:
+                logger.warning(f"Failed to stop {container_name}: {result.stderr.strip()}")
+                return False
+        except Exception as e:
+            logger.error(f"Error stopping {container_name}: {e}")
+            return False
+
+    # ------------------------------------------------------------------
+    # Event handlers
+    # ------------------------------------------------------------------
+
+    def handle_new_job(self, queue_name: str, job_id: str):
+        """Called when a new job arrives. Launch a worker if capacity allows."""
         with self._lock:
-            self.last_job_time = time.time()
-            depth = self.get_queue_depth()
-            waiting = depth["waiting"]
-            processing = depth["processing"]
+            config = QUEUE_CONFIG.get(queue_name)
+            if not config:
+                logger.warning(f"Unknown queue: {queue_name}, ignoring")
+                return
 
-            # Need more workers?
-            needed = waiting + processing
-            if needed > self.current_scale:
-                target = min(needed, MAX_WORKERS)
-                self.scale_workers(target)
-            elif self.current_scale == 0 and waiting > 0:
-                # No workers running, start one
-                self.scale_workers(1)
+            # Circuit Breaker: skip if queue is paused (session expired)
+            if self.queue.is_queue_paused(queue_name):
+                pause_info = self.queue.get_queue_pause_info(queue_name)
+                logger.warning(
+                    f"Queue {queue_name} is PAUSED (session expired). "
+                    f"Will not launch workers. Reason: {pause_info}"
+                )
+                return
 
-    def check_idle_and_scale_down(self):
-        """Periodic check to scale down idle workers."""
+            service = config["service"]
+            max_workers = config["max_workers"]
+
+            running = self.count_running_containers(service)
+            logger.info(
+                f"Queue {queue_name}: {running}/{max_workers} workers running"
+            )
+
+            if running >= max_workers:
+                logger.info(
+                    f"Max workers reached for {service} ({running}/{max_workers}). "
+                    f"Job {job_id} will wait in queue."
+                )
+                return
+
+            self.launch_worker(service, job_id)
+
+    def handle_kill_job(self, job_id: str):
+        """Called when a job needs to be killed. Stop the container running it."""
         with self._lock:
-            depth = self.get_queue_depth()
+            # Look up which container is running this job
+            container_name = self.queue.get_worker_for_job(job_id)
 
-            if depth["total"] == 0:
-                idle_duration = time.time() - self.last_job_time
-                if idle_duration > IDLE_TIMEOUT and self.current_scale > MIN_WORKERS:
-                    logger.info(
-                        f"Queue empty for {idle_duration:.0f}s, "
-                        f"scaling down to {MIN_WORKERS}"
+            if container_name:
+                logger.info(f"Killing job {job_id}: stopping container {container_name}")
+                self.stop_container(container_name)
+                self.queue.unregister_worker(job_id)
+            else:
+                # Try brute-force name pattern match
+                for qconfig in QUEUE_CONFIG.values():
+                    guess = f"webreel-{qconfig['service']}-{job_id[:8]}"
+                    logger.info(f"Trying container name guess: {guess}")
+                    if self.stop_container(guess):
+                        break
+                else:
+                    logger.warning(
+                        f"No container found for job {job_id}. "
+                        f"Job may have already completed or not started."
                     )
-                    self.scale_workers(MIN_WORKERS)
 
-    def listen_for_jobs(self):
-        """Subscribe to Redis for instant job notifications."""
+    # ------------------------------------------------------------------
+    # Redis listeners
+    # ------------------------------------------------------------------
+
+    def listen_for_events(self):
+        """Subscribe to Redis for job notifications (new-job + job-kill)."""
         if not self.queue.redis:
             logger.error("Redis not available. Autoscaler requires Redis.")
             return
 
         pubsub = self.queue.redis.pubsub()
-        pubsub.subscribe("new-job")
+        pubsub.subscribe("new-job", "job-kill")
 
-        logger.info("Listening for new jobs on Redis Pub/Sub...")
+        logger.info("Listening for events on channels: new-job, job-kill")
 
         for message in pubsub.listen():
-            if message["type"] == "message":
-                try:
-                    data = json.loads(message["data"])
+            if message["type"] != "message":
+                continue
+
+            try:
+                channel = message["channel"]
+                data = json.loads(message["data"])
+
+                if channel == "new-job":
                     queue_name = data.get("queue", "unknown")
                     job_id = data.get("job_id", "unknown")
-                    logger.info(f"New job detected: {job_id} -> {queue_name}")
-                    self.handle_new_job()
-                except Exception as e:
-                    logger.warning(f"Error handling job event: {e}")
+                    logger.info(f"Event [new-job]: {job_id} -> {queue_name}")
+                    self.handle_new_job(queue_name, job_id)
 
-    def run_idle_checker(self):
-        """Background thread that periodically checks for idle workers."""
-        while True:
-            time.sleep(60)  # Check every minute
-            try:
-                self.check_idle_and_scale_down()
+                elif channel == "job-kill":
+                    job_id = data.get("job_id", "unknown")
+                    logger.info(f"Event [job-kill]: {job_id}")
+                    self.handle_kill_job(job_id)
+
             except Exception as e:
-                logger.error(f"Idle checker error: {e}")
+                logger.warning(f"Error handling event: {e}")
+
+    def run_cleanup(self):
+        """Periodically clean up orphaned containers that are stuck."""
+        while True:
+            time.sleep(300)  # Every 5 minutes
+            try:
+                # List all exited worker containers and remove them
+                for config in QUEUE_CONFIG.values():
+                    service = config["service"]
+                    result = subprocess.run(
+                        [
+                            "docker", "ps", "-a",
+                            "--filter", f"label=com.docker.compose.service={service}",
+                            "--filter", f"label=com.docker.compose.project={COMPOSE_PROJECT}",
+                            "--filter", "status=exited",
+                            "--format", "{{.ID}}",
+                        ],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    if result.returncode == 0:
+                        containers = [c.strip() for c in result.stdout.strip().split("\n") if c.strip()]
+                        for cid in containers:
+                            subprocess.run(
+                                ["docker", "rm", cid],
+                                capture_output=True, timeout=10,
+                            )
+                            logger.debug(f"Removed exited container: {cid}")
+                        if containers:
+                            logger.info(f"Cleaned up {len(containers)} exited {service} containers")
+            except Exception as e:
+                logger.error(f"Cleanup error: {e}")
 
 
 def run_autoscaler():
     """Main entry point."""
     scaler = AutoScaler()
 
-    logger.info("WebReel Auto-Scaler started")
-    logger.info(f"  Max workers: {MAX_WORKERS}")
-    logger.info(f"  Min workers: {MIN_WORKERS}")
-    logger.info(f"  Idle timeout: {IDLE_TIMEOUT}s")
+    logger.info("WebReel Auto-Scaler started (1 Worker = 1 Job)")
+    logger.info(f"  Compose file: {COMPOSE_FILE}")
+    logger.info(f"  Compose project: {COMPOSE_PROJECT}")
     logger.info(f"  Redis: {scaler.queue._sanitize_url(scaler.queue.redis_url)}")
+    logger.info(f"  Queue config:")
+    for queue_name, config in QUEUE_CONFIG.items():
+        logger.info(f"    {queue_name}: service={config['service']}, max={config['max_workers']}")
 
-    # Sync current state
-    scaler.current_scale = scaler.get_current_worker_count()
-    logger.info(f"  Current workers: {scaler.current_scale}")
+    # Start cleanup thread in background
+    cleanup_thread = threading.Thread(target=scaler.run_cleanup, daemon=True)
+    cleanup_thread.start()
 
-    # Start idle checker in background
-    idle_thread = threading.Thread(target=scaler.run_idle_checker, daemon=True)
-    idle_thread.start()
-
-    # Main thread: listen for new jobs (blocking)
+    # Main thread: listen for events (blocking)
     try:
-        scaler.listen_for_jobs()
+        scaler.listen_for_events()
     except KeyboardInterrupt:
         logger.info("Auto-scaler shutting down")
 

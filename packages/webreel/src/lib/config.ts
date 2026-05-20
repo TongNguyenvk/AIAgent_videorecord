@@ -290,6 +290,8 @@ const VALID_ACTIONS = new Set([
   "navigate",
   "hover",
   "select",
+  "inject_type",
+  "evaluate",
 ]);
 
 const KNOWN_TOP_LEVEL_KEYS = new Set([
@@ -399,6 +401,16 @@ const KNOWN_STEP_KEYS: Record<string, Set<string>> = {
     "delay",
     "description",
   ]),
+  inject_type: new Set([
+    "action",
+    "text",
+    "selector",
+    "within",
+    "label",
+    "delay",
+    "description",
+  ]),
+  evaluate: new Set(["action", "expression", "label", "delay", "description"]),
 };
 
 export interface ValidationError {
@@ -631,6 +643,21 @@ function validateStep(step: unknown, index: number): ValidationError[] {
       }
       break;
     }
+
+    case "inject_type":
+      if (typeof s.text !== "string" || s.text.length === 0) {
+        errors.push({ path: `${prefix}.text`, message: "Must be a non-empty string" });
+      }
+      break;
+
+    case "evaluate":
+      if (typeof s.expression !== "string" || s.expression.length === 0) {
+        errors.push({
+          path: `${prefix}.expression`,
+          message: "Must be a non-empty string",
+        });
+      }
+      break;
   }
 
   if (s.delay !== undefined && (!Number.isFinite(s.delay) || (s.delay as number) < 0)) {

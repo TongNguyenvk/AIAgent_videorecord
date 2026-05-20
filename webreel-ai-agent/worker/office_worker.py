@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import sys
 import time
 from pathlib import Path
@@ -118,13 +119,14 @@ async def process_office_job(job: dict) -> dict:
 
 
 def run_worker():
-    """Main office worker loop."""
+    """Main office worker - processes ONE job then exits."""
     queue = JobQueue()
+    container_name = socket.gethostname()
 
-    logger.info(f"Office Worker {WORKER_ID} started")
+    logger.info(f"Office Worker {WORKER_ID} started (container: {container_name})")
     logger.info(f"Queue: {QUEUE_NAME}")
     logger.info(f"Redis: {queue._sanitize_url(queue.redis_url)}")
-    logger.info("Waiting for slide recording jobs...")
+    logger.info("Waiting for a slide recording job...")
 
     while True:
         try:
@@ -135,12 +137,20 @@ def run_worker():
             job_id = job.get("job_id", "unknown")
             logger.info(f"Picked up Office Job {job_id}")
 
+            # Register this container as the worker for this job (for kill support)
+            queue.register_worker(job_id, container_name)
+
             result = asyncio.run(process_office_job(job))
             queue.set_result(job_id, result)
             queue.ack(QUEUE_NAME, job)
             queue.notify_api(job_id)
+            queue.unregister_worker(job_id)
 
             logger.info(f"Office Job {job_id} -> {result.get('status')}")
+
+            # Single-job mode: exit after processing one job
+            logger.info(f"Single-job mode: exiting after job {job_id}")
+            break
 
         except KeyboardInterrupt:
             logger.info("Office worker shutting down")

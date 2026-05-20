@@ -10,6 +10,7 @@ import asyncio
 import logging
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -22,6 +23,14 @@ sys.path.insert(0, str(AGENT_DIR))
 
 from backend.queue import JobQueue
 
+# Import worker exceptions
+sys.path.insert(0, str(AGENT_DIR / "worker"))
+try:
+    from exceptions import SessionExpiredError
+except ImportError:
+    class SessionExpiredError(Exception):
+        pass
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s - %(message)s")
 logger = logging.getLogger("presentation_worker")
 
@@ -33,6 +42,9 @@ WORKER_ID = os.getenv("WORKER_ID", f"pres-worker-{os.getpid()}")
 # Default is 30s, but OneDrive can take longer especially on first load
 os.environ.setdefault("TIMEOUT_NavigateToUrlEvent", "60")  # 60 seconds
 os.environ.setdefault("TIMEOUT_BrowserStateRequestEvent", "45")  # 45 seconds
+
+# Chrome profile directory
+CHROME_PROFILE_DIR = os.getenv("CHROME_PROFILE_DIR", "/app/chrome_profile")
 
 _chrome_proc = None
 
@@ -64,12 +76,29 @@ def launch_chrome(port: int = 9222) -> subprocess.Popen:
         "--disable-gpu",
         "--disable-dev-shm-usage",
         "--disable-extensions",
+        "--disable-background-networking",
+        "--disable-default-apps",
+        "--disable-sync",
+        "--disable-translate",
+        "--disable-infobars",
+        "--disable-blink-features=AutomationControlled",
+        # Stability flags to prevent Chrome crash during long sessions
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-features=VizDisplayCompositor,TranslateUI",
+        "--disable-hang-monitor",
+        "--disable-ipc-flooding-protection",
+        "--disable-component-update",
+        "--memory-pressure-off",
+        "--js-flags=--max-old-space-size=1024",
+        f"--remote-debugging-address=0.0.0.0",
         "--remote-debugging-port=" + str(port),
         "--remote-allow-origins=*",
         "--window-position=0,0",
         "--window-size=1920,1080",
         "--start-maximized",
-        "--user-data-dir=/app/chrome_profile",  # Persistent profile
+        f"--user-data-dir={CHROME_PROFILE_DIR}",
         "about:blank",
     ]
 
@@ -273,15 +302,11 @@ async def process_job(job: dict) -> dict:
         
         task_prompt = f"Present a PowerPoint file with {num_slides} slides:\n\n"
         task_prompt += f"1. Navigate to: {web_url}\n"
-        task_prompt += f"2. Wait 10-15 seconds for PowerPoint Online to load.\n"
-        task_prompt += f"3. Close any popup dialogs if they appear.\n"
-        task_prompt += f"4. Press Ctrl+F5 to start Slide Show. If it doesn't work, try Shift+Ctrl+F5.\n"
-        task_prompt += f"5. Wait for full-screen presentation mode.\n"
-        task_prompt += f"6. For each of the {num_slides} slides:\n"
+        task_prompt += f"2. Wait 15 seconds for the presentation slide show to fully load.\n"
+        task_prompt += f"3. For each of the {num_slides} slides:\n"
         task_prompt += f"   - Call save_narration with a brief description of the slide content\n"
-        task_prompt += f"   - Press Space to advance to next slide\n"
-        task_prompt += f"7. After the last slide, press Escape to exit.\n"
-        task_prompt += f"8. Call done to finish the task.\n\n"
+        task_prompt += f"   - Press Space or ArrowRight to advance to the next slide\n"
+        task_prompt += f"4. Call done to finish the task.\n\n"
         task_prompt += f"Slide titles for reference:\n"
         
         for idx, slide in enumerate(slides):
@@ -294,6 +319,28 @@ async def process_job(job: dict) -> dict:
         
         logger.info(f"Generated task prompt: \n{task_prompt}")
         
+        from backend.queue import JobQueue
+        queue_client = JobQueue()
+
+        async def progress_callback(phase: float, message: str, data: any = None):
+            queue_client.notify_api_progress(job_id, phase, message, data)
+            
+            if phase == 2.5 and config.get("enable_review", True):
+                queue_client.redis.set(f"job:{job_id}:status", "pending_review", ex=86400)
+                queue_client.notify_api_progress(job_id, phase, "Waiting for user review", data)
+                
+                logger.info(f"Job {job_id} waiting for Phase 2.5 review...")
+                approved_script = await queue_client.wait_for_review(job_id, timeout_seconds=1800)
+                
+                queue_client.redis.set(f"job:{job_id}:status", "processing", ex=86400)
+                if approved_script:
+                    logger.info(f"Job {job_id} review approved. Resuming pipeline.")
+                    return approved_script
+                else:
+                    logger.warning(f"Job {job_id} review timed out. Resuming with default script.")
+                    return None
+            return None
+
         # 4. Execute standard pipeline
         from pipeline import run_pipeline_v3
         
@@ -309,8 +356,10 @@ async def process_job(job: dict) -> dict:
                 tts_voice=config.get("tts_voice", "banmai"),
                 tts_engine=config.get("tts_engine", "edge"),
                 padding_ms=config.get("padding_ms", 300),
-                enable_review=False,
+                enable_review=config.get("enable_review", True),
                 job_id=job_id,
+                agent_mode="presentation",
+                progress_callback=progress_callback,
             )
             
             return {
@@ -327,6 +376,27 @@ async def process_job(job: dict) -> dict:
             logger.info(f"Cleaning up {file_name_only} from OneDrive...")
             delete_from_onedrive(file_name_only)
             
+    except SessionExpiredError as e:
+        logger.error(f"Job {job_id} thất bại: Session hết hạn - {e}", exc_info=True)
+        # Circuit Breaker: tạm dừng queue
+        import json
+        queue_client = JobQueue()
+        queue_client.pause_queue(QUEUE_NAME, f"session_expired: {e}")
+        queue_client.redis.publish("session-expired", json.dumps({
+            "queue": QUEUE_NAME,
+            "job_id": job_id,
+            "error": str(e),
+            "timestamp": time.time(),
+        }))
+        return {
+            "status": "failed",
+            "job_id": job_id,
+            "error": f"SESSION_EXPIRED: {e}",
+            "error_type": "session_expired",
+            "completed_at": time.time(),
+            "worker_id": WORKER_ID,
+        }
+
     except Exception as e:
         import traceback
         trace = traceback.format_exc()
@@ -341,32 +411,35 @@ async def process_job(job: dict) -> dict:
         }
 
 def run_worker():
+    """Main worker - processes ONE job then exits."""
     global _chrome_proc
 
-    try:
-        _chrome_proc = launch_chrome(port=9222)
-    except Exception as e:
-        logger.error(f"Failed to launch Chrome: {e}")
+    # Chrome is launched on-demand when a job arrives, not at startup.
+    logger.info("Chrome will be launched on-demand when a job arrives")
 
     import atexit
     atexit.register(kill_chrome)
 
     queue = JobQueue()
+    container_name = socket.gethostname()
 
-    logger.info(f"Worker {WORKER_ID} started")
+    logger.info(f"Worker {WORKER_ID} started (container: {container_name})")
     logger.info(f"Queue: {QUEUE_NAME}")
     logger.info(f"Redis: {queue._sanitize_url(queue.redis_url)}")
-    logger.info("Waiting for jobs...")
+    logger.info("Waiting for a job...")
+
+    def is_chrome_alive():
+        """Check if Chrome CDP is responsive."""
+        import urllib.request
+        import json as _json
+        try:
+            resp = urllib.request.urlopen("http://localhost:9222/json/version", timeout=2)
+            return resp.status == 200
+        except Exception:
+            return False
 
     while True:
         try:
-            if _chrome_proc and _chrome_proc.poll() is not None:
-                logger.warning("Chrome process died! Restarting...")
-                try:
-                    _chrome_proc = launch_chrome(port=9222)
-                except Exception as e:
-                    logger.error(f"Chrome restart failed: {e}")
-
             job = queue.poll(QUEUE_NAME, timeout=POLL_TIMEOUT)
             if job is None:
                 continue
@@ -374,14 +447,47 @@ def run_worker():
             job_id = job.get("job_id", "unknown")
             logger.info(f"Picked up Job {job_id} from {QUEUE_NAME}")
 
+            # Register this container as the worker for this job (for kill support)
+            queue.register_worker(job_id, container_name)
+
+            # Ensure Chrome is running before processing job
+            if not is_chrome_alive():
+                logger.info("Chrome not running. Starting for job...")
+                try:
+                    if _chrome_proc and _chrome_proc.poll() is None:
+                        _chrome_proc.terminate()
+                        try:
+                            _chrome_proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            _chrome_proc.kill()
+                    _chrome_proc = launch_chrome(port=9222)
+                    logger.info("Chrome started successfully")
+                except Exception as e:
+                    logger.error(f"Chrome start failed: {e}")
+                    queue.set_result(job_id, {
+                        "status": "failed",
+                        "error": f"Chrome failed to start: {e}",
+                        "failed_at": time.time(),
+                        "worker_id": WORKER_ID,
+                    })
+                    queue.ack(QUEUE_NAME, job)
+                    queue.notify_api(job_id)
+                    queue.unregister_worker(job_id)
+                    break
+
             result = asyncio.run(process_job(job))
 
             queue.set_result(job_id, result)
             queue.ack(QUEUE_NAME, job)
             queue.notify_api(job_id)
+            queue.unregister_worker(job_id)
 
             status = result.get("status", "unknown")
             logger.info(f"Job {job_id} -> {status}")
+
+            # Single-job mode: exit after processing one job
+            logger.info(f"Single-job mode: exiting after job {job_id}")
+            break
 
         except KeyboardInterrupt:
             logger.info("Worker shutting down (Ctrl+C)")

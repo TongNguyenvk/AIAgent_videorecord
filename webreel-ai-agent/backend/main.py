@@ -245,203 +245,227 @@ app.include_router(admin_router)  # Legacy admin routes (cookies, etc.)
 
 async def _listen_for_worker_results():
     """Background task that polls Redis for worker results and updates job status.
-    
+
     When a worker completes a job, it stores the result in Redis and publishes
     a notification. This listener picks up those results and updates the
     in-memory job queue + broadcasts via WebSocket.
+
+    Resilient: automatically reconnects with exponential backoff if the Redis
+    connection drops (e.g. Redis restart). Without this, a single disconnect
+    would silently kill the listener and leave all future jobs stuck at
+    "queued" forever in MongoDB.
     """
     import json as _json
-    
+
     if not redis_queue.redis:
         logger.info("Redis not available, result listener disabled")
         return
-    
-    logger.info("Redis result listener started")
-    
-    try:
-        pubsub = redis_queue.redis.pubsub()
-        pubsub.subscribe("job-updates", "session-expired")
-        
-        while True:
-            message = pubsub.get_message(timeout=2.0)
-            if message and message["type"] == "message":
-                try:
-                    channel = message.get("channel", "job-updates")
-                    data = _json.loads(message["data"])
 
-                    # ---------------------------------------------------------
-                    # Circuit Breaker: xử lý session-expired event
-                    # ---------------------------------------------------------
-                    if channel == "session-expired":
-                        queue_name = data.get("queue", "unknown")
-                        job_id = data.get("job_id", "unknown")
-                        error_msg = data.get("error", "Session expired")
-                        logger.warning(
-                            f"CIRCUIT BREAKER: Queue {queue_name} đã bị tạm dừng "
-                            f"do session hết hạn (job {job_id}): {error_msg}"
-                        )
+    backoff = 2  # seconds, doubles on each consecutive failure (max 30s)
 
-                        # Cập nhật job status trong RAM
-                        async with job_queue_lock:
-                            if job_id in job_queue:
-                                job_queue[job_id]["status"] = "failed"
-                                job_queue[job_id]["error"] = f"SESSION_EXPIRED: {error_msg}"
-                                job_queue[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+    while True:
+        pubsub = None
+        try:
+            # Force a fresh connection so stale sockets from a previous
+            # iteration don't immediately raise again.
+            redis_queue._redis = None
+            if not redis_queue.redis:
+                logger.warning("Redis reconnect failed, retrying in %ds...", backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+                continue
 
-                        # Cập nhật MongoDB
-                        if Database.is_connected():
-                            from backend.crud.jobs import update_job
-                            await update_job(job_id, {
-                                "status": "failed",
-                                "error": f"SESSION_EXPIRED: {error_msg}",
-                                "completed_at": datetime.now(timezone.utc),
+            pubsub = redis_queue.redis.pubsub()
+            pubsub.subscribe("job-updates", "session-expired")
+            logger.info("Redis result listener started (backoff reset)")
+            backoff = 2  # reset on successful connect
+
+            while True:
+                message = pubsub.get_message(timeout=2.0)
+                if message and message["type"] == "message":
+                    try:
+                        channel = message.get("channel", "job-updates")
+                        data = _json.loads(message["data"])
+
+                        # -----------------------------------------------------
+                        # Circuit Breaker: session-expired event
+                        # -----------------------------------------------------
+                        if channel == "session-expired":
+                            queue_name = data.get("queue", "unknown")
+                            job_id = data.get("job_id", "unknown")
+                            error_msg = data.get("error", "Session expired")
+                            logger.warning(
+                                f"CIRCUIT BREAKER: Queue {queue_name} paused "
+                                f"(session expired, job {job_id}): {error_msg}"
+                            )
+
+                            async with job_queue_lock:
+                                if job_id in job_queue:
+                                    job_queue[job_id]["status"] = "failed"
+                                    job_queue[job_id]["error"] = f"SESSION_EXPIRED: {error_msg}"
+                                    job_queue[job_id]["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+                            if Database.is_connected():
+                                from backend.crud.jobs import update_job
+                                await update_job(job_id, {
+                                    "status": "failed",
+                                    "error": f"SESSION_EXPIRED: {error_msg}",
+                                    "completed_at": datetime.now(timezone.utc),
+                                })
+
+                            await manager.broadcast_global({
+                                "event": "session_expired",
+                                "queue": queue_name,
+                                "job_id": job_id,
+                                "error": error_msg,
+                                "message": (
+                                    f"Queue {queue_name} paused: session expired. "
+                                    f"Please re-login on Session Manager."
+                                ),
+                                "timestamp": data.get("timestamp", time.time()),
                             })
 
-                        # Broadcast cảnh báo tới TẤT CẢ WebSocket clients
-                        await manager.broadcast_global({
-                            "event": "session_expired",
-                            "queue": queue_name,
-                            "job_id": job_id,
-                            "error": error_msg,
-                            "message": f"Queue {queue_name} đã bị tạm dừng: session hết hạn. Vui lòng đăng nhập lại trên Session Manager.",
-                            "timestamp": data.get("timestamp", time.time()),
-                        })
+                            await broadcast_progress(job_id)
+                            continue
 
-                        # Broadcast cập nhật cho job cụ thể
-                        await broadcast_progress(job_id)
-                        continue
+                        # -----------------------------------------------------
+                        # Normal job-updates
+                        # -----------------------------------------------------
+                        job_id = data.get("job_id")
+                        if not job_id:
+                            continue
 
-                    # ---------------------------------------------------------
-                    # Xử lý job-updates bình thường
-                    # ---------------------------------------------------------
-                    job_id = data.get("job_id")
-                    if not job_id:
-                        continue
-                    
-                    event = data.get("event")
-                    
-                    if event == "progress":
-                        progress_data = data.get("progress")
-                        new_status = None
-                        async with job_queue_lock:
-                            if job_id in job_queue:
-                                job_queue[job_id]["progress"] = progress_data
-                                if progress_data.get("current_phase") == 2.5:
-                                    job_queue[job_id]["status"] = "pending_review"
-                                    new_status = "pending_review"
+                        event = data.get("event")
+
+                        if event == "progress":
+                            progress_data = data.get("progress")
+                            new_status = None
+                            async with job_queue_lock:
+                                if job_id in job_queue:
+                                    job_queue[job_id]["progress"] = progress_data
+                                    if progress_data.get("current_phase") == 2.5:
+                                        job_queue[job_id]["status"] = "pending_review"
+                                        new_status = "pending_review"
+                                    else:
+                                        current = job_queue[job_id].get("status")
+                                        if current in ("queued", "pending"):
+                                            job_queue[job_id]["status"] = "running"
+                                            new_status = "running"
+
+                            if new_status and Database.is_connected():
+                                from backend.crud.jobs import update_job
+                                mongo_updates = {"progress": progress_data, "status": new_status}
+                                if new_status == "running":
+                                    mongo_updates["started_at"] = datetime.now(timezone.utc)
+                                await update_job(job_id, mongo_updates)
+                                logger.info(f"MongoDB synced: Job {job_id} -> {new_status}")
+
+                            await broadcast_progress(job_id)
+                            continue
+
+                        if event != "completed":
+                            continue
+
+                        # Fetch full result from Redis
+                        result = redis_queue.get_result(job_id)
+                        if not result:
+                            continue
+
+                        completed_at = datetime.now(timezone.utc).isoformat()
+                        video_path_str = result.get("video_path", "")
+                        video_url = ""
+
+                        if video_path_str:
+                            from backend.storage import R2Storage
+                            from pathlib import Path
+                            import os
+
+                            r2_storage = R2Storage()
+                            local_path = Path(video_path_str)
+                            r2_key: Optional[str] = None
+
+                            if r2_storage.is_enabled() and local_path.exists():
+                                logger.info(f"Uploading video {local_path.name} to R2...")
+                                r2_result = await r2_storage.upload_video(local_path, job_id)
+
+                                if r2_result and "cdn_url" in r2_result:
+                                    video_url = r2_result["cdn_url"]
+                                    r2_key = r2_result.get("r2_key")
+                                    logger.info(f"Uploaded to R2: {video_url}. Deleting local file.")
+                                    try:
+                                        os.remove(local_path)
+                                    except Exception as e:
+                                        logger.warning(f"Failed to delete local video file {local_path}: {e}")
                                 else:
-                                    # Sync running status for other phases
-                                    current = job_queue[job_id].get("status")
-                                    if current in ("queued", "pending"):
-                                        job_queue[job_id]["status"] = "running"
-                                        new_status = "running"
-                        
-                        # Persist status change to MongoDB
-                        if new_status and Database.is_connected():
-                            from backend.crud.jobs import update_job
-                            mongo_updates = {"progress": progress_data, "status": new_status}
-                            if new_status == "running":
-                                mongo_updates["started_at"] = datetime.now(timezone.utc)
-                            await update_job(job_id, mongo_updates)
-                            logger.info(f"MongoDB synced: Job {job_id} -> {new_status}")
-                        
-                        await broadcast_progress(job_id)
-                        continue
-                        
-                    if event != "completed":
-                        continue
-                        
-                    # Fetch full result from Redis
-                    result = redis_queue.get_result(job_id)
-                    if not result:
-                        continue
-                    
-                    completed_at = datetime.now(timezone.utc).isoformat()
-                    video_path_str = result.get("video_path", "")
-                    video_url = ""
-                    
-                    if video_path_str:
-                        from backend.storage import R2Storage
-                        from pathlib import Path
-                        import os
-                        
-                        r2_storage = R2Storage()
-                        local_path = Path(video_path_str)
-                        r2_key: Optional[str] = None
-
-                        if r2_storage.is_enabled() and local_path.exists():
-                            logger.info(f"Uploading video {local_path.name} to R2...")
-                            r2_result = await r2_storage.upload_video(local_path, job_id)
-
-                            if r2_result and "cdn_url" in r2_result:
-                                # Keep cdn_url for backward compat but stash
-                                # r2_key so /view can sign a short-lived URL
-                                # on each play.
-                                video_url = r2_result["cdn_url"]
-                                r2_key = r2_result.get("r2_key")
-                                logger.info(f"Uploaded to R2: {video_url}. Deleting local file.")
-                                try:
-                                    os.remove(local_path)
-                                except Exception as e:
-                                    logger.warning(f"Failed to delete local video file {local_path}: {e}")
+                                    video_url = build_video_url(video_path_str)
                             else:
                                 video_url = build_video_url(video_path_str)
-                        else:
-                            video_url = build_video_url(video_path_str)
 
-                    result_status = result.get("status", "completed")
-                    result_data = {
-                        "video_path": video_path_str,
-                        "video_url": video_url,
-                        "r2_key": r2_key,
-                        "duration_seconds": None,
-                    }
-                    
-                    # Update progress to final phase when completed
-                    final_progress = {
-                        "current_phase": 6,
-                        "phase_name": "Completed",
-                        "message": "Video generation completed successfully"
-                    }
-                    
-                    # Update in-memory job queue
-                    async with job_queue_lock:
-                        if job_id in job_queue:
-                            job_queue[job_id]["status"] = result_status
-                            job_queue[job_id]["result"] = result_data
-                            job_queue[job_id]["progress"] = final_progress
-                            if result.get("error"):
-                                job_queue[job_id]["error"] = result["error"]
-                            job_queue[job_id]["completed_at"] = completed_at
-                    
-                    # Persist to MongoDB
-                    if Database.is_connected():
-                        from backend.crud.jobs import update_job
-                        mongo_updates = {
-                            "status": result_status,
-                            "result": result_data,
-                            "progress": final_progress,
-                            "completed_at": datetime.now(timezone.utc),
+                        result_status = result.get("status", "completed")
+                        result_data = {
+                            "video_path": video_path_str,
+                            "video_url": video_url,
+                            "r2_key": r2_key,
+                            "duration_seconds": None,
                         }
-                        if result.get("error"):
-                            mongo_updates["error"] = result["error"]
-                        await update_job(job_id, mongo_updates)
-                        logger.info(f"MongoDB synced: Job {job_id} -> {result_status} (completed)")
-                    
-                    # Broadcast to WebSocket clients
-                    await broadcast_progress(job_id)
-                    logger.info(f"Worker result received for Job {job_id}: {result_status}")
-                    
-                except Exception as e:
-                    logger.warning(f"Error processing worker result: {e}")
-            
-            await asyncio.sleep(0.5)
-    
-    except asyncio.CancelledError:
-        logger.info("Redis result listener stopped")
-        pubsub.unsubscribe()
-    except Exception as e:
-        logger.error(f"Result listener error: {e}", exc_info=True)
+
+                        final_progress = {
+                            "current_phase": 6,
+                            "phase_name": "Completed",
+                            "message": "Video generation completed successfully"
+                        }
+
+                        async with job_queue_lock:
+                            if job_id in job_queue:
+                                job_queue[job_id]["status"] = result_status
+                                job_queue[job_id]["result"] = result_data
+                                job_queue[job_id]["progress"] = final_progress
+                                if result.get("error"):
+                                    job_queue[job_id]["error"] = result["error"]
+                                job_queue[job_id]["completed_at"] = completed_at
+
+                        if Database.is_connected():
+                            from backend.crud.jobs import update_job
+                            mongo_updates = {
+                                "status": result_status,
+                                "result": result_data,
+                                "progress": final_progress,
+                                "completed_at": datetime.now(timezone.utc),
+                            }
+                            if result.get("error"):
+                                mongo_updates["error"] = result["error"]
+                            await update_job(job_id, mongo_updates)
+                            logger.info(f"MongoDB synced: Job {job_id} -> {result_status} (completed)")
+
+                        await broadcast_progress(job_id)
+                        logger.info(f"Worker result received for Job {job_id}: {result_status}")
+
+                    except Exception as e:
+                        logger.warning(f"Error processing worker result: {e}")
+
+                await asyncio.sleep(0.5)
+
+        except asyncio.CancelledError:
+            logger.info("Redis result listener stopped")
+            if pubsub:
+                try:
+                    pubsub.unsubscribe()
+                except Exception:
+                    pass
+            return
+        except Exception as e:
+            logger.error(
+                f"Result listener lost Redis connection: {e}. "
+                f"Reconnecting in {backoff}s...",
+                exc_info=True,
+            )
+            if pubsub:
+                try:
+                    pubsub.unsubscribe()
+                except Exception:
+                    pass
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 30)
 
 
 async def update_job_status(job_id: str, updates: dict) -> None:

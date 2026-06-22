@@ -19,9 +19,25 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from typing import Any
 from pathlib import Path
 from dataclasses import dataclass
+
+
+def _safe_print(message: object = "") -> None:
+    """Print text safely on Windows consoles with non-UTF-8 code pages."""
+    text = str(message)
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        stream = getattr(sys, "stdout", None)
+        if stream is None:
+            return
+        encoding = stream.encoding or "utf-8"
+        escaped = text.encode(encoding, errors="backslashreplace").decode(encoding)
+        stream.write(escaped + "\n")
+        stream.flush()
 
 
 @dataclass
@@ -169,7 +185,7 @@ def compute_narration_timestamps(
             continue
         dur = _get_audio_duration_ms(af)
         audio_durations.append(dur)
-        print(f"[TraceComposer] Audio {af.name}: {dur}ms ({dur/1000:.1f}s)")
+        _safe_print(f"[TraceComposer] Audio {af.name}: {dur}ms ({dur/1000:.1f}s)")
 
     # Build a lookup for steps by their designated tts_index
     # Format in description: "[TTS:idx] ..." or "[NARRATION:idx] ..."
@@ -183,17 +199,17 @@ def compute_narration_timestamps(
         if match:
             idx = int(match.group(1))
             tts_indexed_steps[idx] = step
-            print(f"[TraceComposer] Found tagged step in trace: {idx} -> at {step.start_time_ms}ms")
+            _safe_print(f"[TraceComposer] Found tagged step in trace: {idx} -> at {step.start_time_ms}ms")
     
     if not tts_indexed_steps:
         # Fallback to the old description-based mapping (without [TTS: prefix)
         described_steps = [s for s in trace if s.description and not s.description.startswith("[TTS:")]
         if described_steps:
-            print(f"[TraceComposer] WARNING: No '[TTS:idx]' tags found. Falling back to {len(described_steps)} described steps.")
+            _safe_print(f"[TraceComposer] WARNING: No '[TTS:idx]' tags found. Falling back to {len(described_steps)} described steps.")
         else:
-            print("[TraceComposer] WARNING: No tagged or described steps found in trace.")
+            _safe_print("[TraceComposer] WARNING: No tagged or described steps found in trace.")
     else:
-        print(f"[TraceComposer] Found {len(tts_indexed_steps)} tts-indexed steps in trace.")
+        _safe_print(f"[TraceComposer] Found {len(tts_indexed_steps)} tts-indexed steps in trace.")
         described_steps = [] # Will not be used
 
     # Compute placement timestamps
@@ -215,7 +231,7 @@ def compute_narration_timestamps(
             # Place narration at the start of this step
             real_ts = int(key_step.start_time_ms)
             desc = key_step.description if hasattr(key_step, 'description') else "???"
-            print(f"[TraceComposer] Narration {i} -> {label_info} at {real_ts}ms | describes: '{desc}'")
+            _safe_print(f"[TraceComposer] Narration {i} -> {label_info} at {real_ts}ms | describes: '{desc}'")
         else:
             # Fallback: distribute remaining evenly across the tail
             total_ms = int(trace[-1].end_time_ms) if trace else 0
@@ -223,14 +239,14 @@ def compute_narration_timestamps(
             remaining = num_narrations - i
             gap = max(2000, (total_ms - last_placed) // (remaining + 1))
             real_ts = last_placed + gap
-            print(f"[TraceComposer] Narration {i} -> fallback at {real_ts}ms (no mapping)")
+            _safe_print(f"[TraceComposer] Narration {i} -> fallback at {real_ts}ms (no mapping)")
 
         # Prevent overlap with previous narration
         if i > 0 and real_timestamps:
             prev_end = real_timestamps[-1] + audio_durations[i - 1]
             min_start = prev_end + 800  # 800ms buffer for natural pacing
             if real_ts < min_start:
-                print(f"[TraceComposer]   Pushed from {real_ts}ms to {min_start}ms (prev ends at {prev_end}ms)")
+                _safe_print(f"[TraceComposer]   Pushed from {real_ts}ms to {min_start}ms (prev ends at {prev_end}ms)")
                 real_ts = min_start
 
         real_timestamps.append(real_ts)
@@ -258,13 +274,13 @@ def compose_video_from_trace(
 
     ffmpeg = _find_ffmpeg()
 
-    print(f"[TraceComposer] Loading trace: {trace_path}")
+    _safe_print(f"[TraceComposer] Loading trace: {trace_path}")
     trace = load_execution_trace(trace_path)
-    print(f"[TraceComposer] Trace has {len(trace)} steps")
+    _safe_print(f"[TraceComposer] Trace has {len(trace)} steps")
 
     # Check cancellation before heavy work
     if cancel_event and cancel_event.is_set():
-        print("[TraceComposer] Cancelled before processing")
+        _safe_print("[TraceComposer] Cancelled before processing")
         return video_path
 
     # Process audio files, preserving None for failed segments
@@ -277,21 +293,21 @@ def compose_video_from_trace(
         if af_path.exists():
             processed_audio.append(af_path)
         else:
-            print(f"[TraceComposer] WARNING: Audio file not found: {af_path}")
+            _safe_print(f"[TraceComposer] WARNING: Audio file not found: {af_path}")
             processed_audio.append(None)
 
     if not any(processed_audio):
-        print("[TraceComposer] No valid audio files. Returning original.")
+        _safe_print("[TraceComposer] No valid audio files. Returning original.")
         return video_path
 
     # Compute placement timestamps from trace data (preserving indices)
     timestamps = compute_narration_timestamps(trace, processed_audio)
 
     # Log the placements
-    print(f"\n[TraceComposer] Audio placements:")
+    _safe_print("\n[TraceComposer] Audio placements:")
     for i, (af, ts) in enumerate(zip(processed_audio, timestamps)):
         af_name = af.name if af else "FAILED"
-        print(f"  [{i}] {af_name} -> {ts}ms ({ts / 1000:.2f}s)")
+        _safe_print(f"  [{i}] {af_name} -> {ts}ms ({ts / 1000:.2f}s)")
 
     # Build ffmpeg command
     cmd = [ffmpeg, "-y", "-i", str(video_path)]
@@ -346,9 +362,9 @@ def compose_video_from_trace(
         str(output_path),
     ])
 
-    print(f"\n[TraceComposer] Running ffmpeg...")
-    print(f"[TraceComposer] Command: {' '.join(cmd)}")
-    print(f"[TraceComposer] Filter complex: {filter_complex}")
+    _safe_print("\n[TraceComposer] Running ffmpeg...")
+    _safe_print(f"[TraceComposer] Command: {' '.join(cmd)}")
+    _safe_print(f"[TraceComposer] Filter complex: {filter_complex}")
 
     # Use Popen + poll so we can kill FFmpeg when cancelled
     import time
@@ -381,10 +397,10 @@ def compose_video_from_trace(
     # Poll loop: check cancel_event while FFmpeg runs
     while proc.poll() is None:
         if cancel_event and cancel_event.is_set():
-            print("[TraceComposer] Cancel requested, killing ffmpeg...")
+            _safe_print("[TraceComposer] Cancel requested, killing ffmpeg...")
             proc.kill()
             proc.wait(timeout=5)
-            print("[TraceComposer] FFmpeg killed")
+            _safe_print("[TraceComposer] FFmpeg killed")
             return video_path
         time.sleep(0.3)
 
@@ -395,10 +411,10 @@ def compose_video_from_trace(
     stderr_data = "".join(stderr_lines)
 
     if proc.returncode != 0:
-        print(f"[TraceComposer] ffmpeg stderr:\n{stderr_data}")
+        _safe_print(f"[TraceComposer] ffmpeg stderr:\n{stderr_data}")
         raise RuntimeError(f"ffmpeg failed: {proc.returncode}")
 
-    print(f"[TraceComposer] Done: {output_path}")
+    _safe_print(f"[TraceComposer] Done: {output_path}")
     return output_path
 
 
@@ -407,12 +423,12 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 4:
-        print("Usage: python trace_composer.py <video.mp4> <trace.json> <audio1.mp3> [audio2.mp3 ...]")
-        print("")
-        print("Example:")
-        print("  python trace_composer.py output/w3test/w3test_raw.mp4 \\")
-        print("    output/w3test/.webreel/traces/w3test.trace.json \\")
-        print("    output/w3test/audio/narration_000.mp3 output/w3test/audio/narration_001.mp3")
+        _safe_print("Usage: python trace_composer.py <video.mp4> <trace.json> <audio1.mp3> [audio2.mp3 ...]")
+        _safe_print("")
+        _safe_print("Example:")
+        _safe_print("  python trace_composer.py output/w3test/w3test_raw.mp4 \\")
+        _safe_print("    output/w3test/.webreel/traces/w3test.trace.json \\")
+        _safe_print("    output/w3test/audio/narration_000.mp3 output/w3test/audio/narration_001.mp3")
         sys.exit(1)
 
     video = sys.argv[1]

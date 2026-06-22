@@ -23,24 +23,30 @@ import {
   Eye,
   X,
   Info,
+  Square,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
   fetchVideos,
+  fetchCurrentUserProfile,
   getJobDetail,
   getVideoDownloadUrl,
   getVideoViewUrl,
+  cancelMyJob,
 } from "@/lib/api";
 import type { JobDetail } from "@/lib/api";
 import { useState, useCallback } from "react";
 import { Phase25Review } from "@/components/Phase25Review";
 import { toast } from "sonner";
+import { useAuth } from "@/contexts/AuthContext";
 
 export function Dashboard() {
+  const { user } = useAuth();
   const [reviewingJobId, setReviewingJobId] = useState<string | null>(null);
   const [detailJob, setDetailJob] = useState<JobDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [cancelLoadingJobId, setCancelLoadingJobId] = useState<string | null>(null);
 
   const {
     data: videos,
@@ -53,7 +59,18 @@ export function Dashboard() {
     refetchInterval: 5000,
   });
 
+  const { data: currentUser } = useQuery({
+    queryKey: ["current-user-profile"],
+    queryFn: fetchCurrentUserProfile,
+    refetchInterval: 10000,
+  });
+
   const displayVideos = videos || [];
+  const quota = currentUser?.quota || user?.quota;
+  const quotaLimit = quota?.videos_per_month ?? 0;
+  const quotaUsed = quota?.videos_used_this_month ?? 0;
+  const quotaRemaining = Math.max(quotaLimit - quotaUsed, 0);
+  const quotaPercent = quotaLimit > 0 ? Math.min((quotaUsed / quotaLimit) * 100, 100) : 0;
 
   const totalCompleted = displayVideos.filter((v) => v.status === "completed").length;
   const successRate =
@@ -108,6 +125,24 @@ export function Dashboard() {
     }
   }, []);
 
+  const handleCancelJob = useCallback(
+    async (jobId: string) => {
+      if (!confirm("Bạn có chắc muốn dừng job đang chạy này?")) return;
+
+      setCancelLoadingJobId(jobId);
+      try {
+        await cancelMyJob(jobId);
+        toast.success("Đã dừng job");
+        refetch();
+      } catch (error) {
+        toast.error((error as Error).message || "Không thể dừng job");
+      } finally {
+        setCancelLoadingJobId(null);
+      }
+    },
+    [refetch],
+  );
+
   return (
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -136,6 +171,23 @@ export function Dashboard() {
           </Link>
         </div>
       </div>
+
+      {quota && (
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-100">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <span className="font-medium">Hạn mức tháng này:</span>{" "}
+              {quotaUsed}/{quotaLimit} job đã dùng, còn {quotaRemaining} job.
+            </div>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-blue-200 dark:bg-blue-950 sm:w-48">
+              <div
+                className="h-full rounded-full bg-blue-600 dark:bg-blue-400"
+                style={{ width: `${quotaPercent}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-6 md:grid-cols-4">
         <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-white/5 dark:backdrop-blur-xl">
@@ -306,6 +358,11 @@ export function Dashboard() {
                         <span className="block text-xs text-gray-500 dark:text-muted-foreground mt-1 font-normal opacity-70">
                           {video.date}
                         </span>
+                        {video.status === "cancelled" && video.cancel_message && (
+                          <span className="block text-xs text-red-600 dark:text-red-300 mt-1 font-normal">
+                            {video.cancel_message}
+                          </span>
+                        )}
                       </TableCell>
                       <TableCell>
                         <StatusBadge status={video.status} />
@@ -374,9 +431,24 @@ export function Dashboard() {
                             </Button>
                           )}
 
-                          {["pending", "queued", "running", "processing"].includes(
-                            video.status,
-                          ) && (
+                          {video.status === "running" && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="border-red-500/20 text-red-500 hover:bg-red-500/10"
+                              onClick={() => handleCancelJob(String(video.id))}
+                              disabled={cancelLoadingJobId === String(video.id)}
+                            >
+                              {cancelLoadingJobId === String(video.id) ? (
+                                <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                              ) : (
+                                <Square className="w-4 h-4 mr-1" />
+                              )}
+                              {"Dừng"}
+                            </Button>
+                          )}
+
+                          {["pending", "queued", "processing"].includes(video.status) && (
                             <Button
                               variant="ghost"
                               size="sm"

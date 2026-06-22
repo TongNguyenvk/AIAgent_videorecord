@@ -181,6 +181,12 @@ async def login(request: Request, credentials: UserLogin):
     return _build_token_response(user)
 
 
+@router.get("/me", response_model=UserResponse)
+async def get_me(current_user: dict = Depends(get_current_user)):
+    """Return the current user profile from MongoDB."""
+    return _build_user_response(current_user)
+
+
 @router.post("/google", response_model=TokenResponse)
 async def google_auth(request: GoogleAuthRequest):
     """

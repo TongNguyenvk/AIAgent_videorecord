@@ -33,6 +33,14 @@ except ImportError:
 class JobQueue:
     """Redis-backed job queue with reliable dequeue and result storage."""
 
+    DEFAULT_QUEUES = [
+        "web-queue",
+        "office-queue",
+        "os-queue",
+        "presentation-queue",
+        "presentation-gg-queue",
+    ]
+
     def __init__(self, redis_url: str = None):
         self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
         self._redis = None
@@ -264,6 +272,61 @@ class JobQueue:
         if self.redis:
             self.redis.delete(f"job:{job_id}:worker")
             logger.debug(f"Unregistered worker for job {job_id}")
+
+    def remove_job_from_queues(
+        self,
+        job_id: str,
+        queues: Optional[list[str]] = None,
+    ) -> int:
+        """Remove a job payload from waiting and processing Redis queues."""
+        if not self.redis:
+            return 0
+
+        removed = 0
+        queue_names = queues or self.DEFAULT_QUEUES
+
+        for queue_name in queue_names:
+            for redis_key in (queue_name, f"{queue_name}:processing"):
+                try:
+                    payloads = self.redis.lrange(redis_key, 0, -1)
+                except Exception as e:
+                    logger.warning(f"Failed to inspect {redis_key}: {e}")
+                    continue
+
+                for payload in payloads:
+                    try:
+                        job = json.loads(payload)
+                    except Exception:
+                        continue
+
+                    if job.get("job_id") != job_id:
+                        continue
+
+                    try:
+                        count = self.redis.lrem(redis_key, 0, payload)
+                        removed += count
+                        if count:
+                            logger.info(
+                                f"Removed job {job_id} from Redis list {redis_key}"
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to remove job {job_id} from {redis_key}: {e}"
+                        )
+
+        return removed
+
+    def publish_job_kill(self, job_id: str) -> bool:
+        """Notify the autoscaler to stop the worker container for a job."""
+        if not self.redis:
+            return False
+
+        self.redis.publish(
+            "job-kill",
+            json.dumps({"job_id": job_id}),
+        )
+        logger.info(f"Published job-kill event for job {job_id}")
+        return True
 
     def notify_api(self, job_id: str, channel: str = "job-updates"):
         """Publish job completion to Redis Pub/Sub for API WebSocket broadcast."""

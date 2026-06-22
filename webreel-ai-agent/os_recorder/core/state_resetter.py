@@ -165,10 +165,33 @@ class StateResetter:
           4. Verify window exists
         """
         try:
+            if not backup_file or not instance.file_path:
+                logger.info("Office blank reset strategy: Kill + restart")
+                logger.info(f"Killing process PID={instance.pid}...")
+                self._kill_process(instance.pid, force=True)
+                time.sleep(1)
+
+                logger.info(f"Restarting {instance.app_type} without file...")
+                new_instance = self.launcher.launch(
+                    app_type=instance.app_type,
+                    wait_seconds=5,
+                    force_new=True,
+                )
+
+                if verify:
+                    if not self.launcher.verify_instance(new_instance):
+                        raise StateResetError("Reset verification failed")
+
+                logger.info(f"Office blank reset successful (new PID={new_instance.pid})")
+
+                return ResetResult(
+                    success=True,
+                    new_instance=new_instance,
+                    message="Reset successful: Office app restarted without file",
+                    reset_strategy="office_kill_restart_blank",
+                )
+
             # Validate backup file
-            if not backup_file:
-                raise StateResetError("Backup file required for Office app reset")
-            
             if not Path(backup_file).exists():
                 raise StateResetError(f"Backup file not found: {backup_file}")
             

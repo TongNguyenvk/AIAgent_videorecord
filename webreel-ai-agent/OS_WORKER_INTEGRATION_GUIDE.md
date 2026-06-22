@@ -69,6 +69,14 @@ This guide covers the complete integration of OS Worker into the WebReel product
    - Can be disabled for dedicated VMs (set to 0)
    - Re-queue jobs if user becomes active
 
+6. **Phase 2.5 Script Review**
+   - Publishes generated OS narration segments to the API progress payload
+   - Sets the job status to `pending_review`
+   - Requires an authenticated job owner, or admin, to fetch and approve the script
+   - Waits on Redis channel `job:{job_id}:review_approved`
+   - Resumes TTS and recording after the reviewed script is approved
+   - Falls back to the generated script after `REVIEW_TIMEOUT_SECONDS`
+
 ## Configuration
 
 ### Environment Variables
@@ -86,6 +94,7 @@ INTERNAL_API_KEY=your-secret-key-here
 WORKER_ID=os-worker-1
 WORKER_QUEUE=os-queue
 POLL_TIMEOUT=10
+REVIEW_TIMEOUT_SECONDS=1800
 
 # Idle detection (0 to disable)
 IDLE_THRESHOLD=120

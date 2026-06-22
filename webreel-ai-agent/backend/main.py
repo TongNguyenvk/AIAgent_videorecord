@@ -374,6 +374,32 @@ async def _listen_for_worker_results():
                         completed_at = datetime.now(timezone.utc).isoformat()
                         video_path_str = result.get("video_path", "")
                         video_url = ""
+                        r2_key: Optional[str] = None
+                        existing_result = {}
+                        existing_status = None
+
+                        async with job_queue_lock:
+                            memory_job = job_queue.get(job_id)
+                            if memory_job:
+                                existing_status = memory_job.get("status")
+
+                        if Database.is_connected():
+                            try:
+                                from backend.crud.jobs import get_job
+                                existing_job = await get_job(job_id)
+                                if existing_job:
+                                    existing_status = existing_job.get("status")
+                                    if isinstance(existing_job.get("result"), dict):
+                                        existing_result = existing_job["result"]
+                            except Exception as e:
+                                logger.warning(f"Failed to load existing job result for {job_id}: {e}")
+
+                        if existing_status == "cancelled":
+                            logger.info(
+                                f"Ignoring worker result for cancelled job {job_id}"
+                            )
+                            redis_queue.unregister_worker(job_id)
+                            continue
 
                         if video_path_str:
                             from backend.storage import R2Storage
@@ -382,7 +408,6 @@ async def _listen_for_worker_results():
 
                             r2_storage = R2Storage()
                             local_path = Path(video_path_str)
-                            r2_key: Optional[str] = None
 
                             if r2_storage.is_enabled() and local_path.exists():
                                 logger.info(f"Uploading video {local_path.name} to R2...")
@@ -402,17 +427,23 @@ async def _listen_for_worker_results():
                                 video_url = build_video_url(video_path_str)
 
                         result_status = result.get("status", "completed")
-                        result_data = {
-                            "video_path": video_path_str,
-                            "video_url": video_url,
+                        existing_video_url = existing_result.get("video_url")
+                        if existing_video_url and not video_url.startswith("http"):
+                            video_url = existing_video_url
+                        r2_key = r2_key or existing_result.get("r2_key")
+
+                        result_data = dict(existing_result)
+                        result_data.update({
+                            "video_path": video_path_str or existing_result.get("video_path"),
+                            "video_url": video_url or existing_result.get("video_url"),
                             "r2_key": r2_key,
-                            "duration_seconds": None,
-                        }
+                            "duration_seconds": existing_result.get("duration_seconds"),
+                        })
 
                         final_progress = {
                             "current_phase": 6,
-                            "phase_name": "Completed",
-                            "message": "Video generation completed successfully"
+                            "phase_name": "Failed" if result_status == "failed" else "Completed",
+                            "message": result.get("error") or "Video generation completed successfully"
                         }
 
                         async with job_queue_lock:
@@ -729,31 +760,111 @@ async def get_job_status(job_id: str):
     return job_data
 
 
+async def _get_authorized_job_for_review(job_id: str, user: dict) -> dict:
+    """Load a job and enforce owner-only access for script review endpoints."""
+    memory_job = None
+    async with job_queue_lock:
+        if job_id in job_queue:
+            memory_job = job_queue[job_id].copy()
+
+    db_job = None
+    if Database.is_connected():
+        from backend.crud.jobs import get_job
+        db_job = await get_job(job_id)
+
+    if not memory_job and not db_job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job_data = {}
+    if db_job:
+        job_data.update(db_job)
+    if memory_job:
+        job_data.update({k: v for k, v in memory_job.items() if v is not None})
+
+    job_user_id = job_data.get("user_id")
+    if user.get("role") != "admin" and job_user_id != user["user_id"]:
+        logger.warning(
+            f"User {user['user_id']} attempted to review job {job_id} owned by {job_user_id}"
+        )
+        raise HTTPException(status_code=403, detail="Access denied: not your job")
+
+    return job_data
+
+
 @app.get("/api/jobs/{job_id}/script")
-async def get_job_script(job_id: str):
+async def get_job_script(job_id: str, user: dict = Depends(get_current_user)):
     """
     Retrieve the TTS script for a job in Phase 2.5.
     """
-    # Try in-memory first
-    video_name = None
-    async with job_queue_lock:
-        if job_id in job_queue:
-            video_name = job_queue[job_id].get("video_name")
+    def build_script(raw_script):
+        if isinstance(raw_script, dict) and "segments" in raw_script:
+            return raw_script
+
+        if not isinstance(raw_script, list):
+            return None
+
+        segments = []
+        for i, seg in enumerate(raw_script):
+            if not isinstance(seg, dict):
+                continue
+
+            narration_index = seg.get("narration_index", seg.get("index", i))
+            segments.append(
+                {
+                    "id": seg.get("id", f"seg_{i:03d}"),
+                    "text": seg.get("narration", seg.get("text", "")),
+                    "timing": seg.get("duration", seg.get("timing")),
+                    "action_type": seg.get("action_type", ""),
+                    "narration_index": narration_index,
+                    "edited": seg.get("edited", False),
+                    "approved": seg.get("approved", True),
+                }
+            )
+
+        return {
+            "segments": segments,
+            "total_segments": len(segments),
+            "reviewed_segments": 0,
+            "approved_segments": 0,
+            "review_status": "pending",
+        }
+
+    def build_script_from_progress(progress_data):
+        if isinstance(progress_data, dict):
+            raw_script = (
+                progress_data.get("data")
+                or progress_data.get("tts_script")
+                or progress_data.get("script")
+            )
+            script = build_script(raw_script)
+            if script:
+                return script
+
+        return build_script(progress_data)
+
+    job_data = await _get_authorized_job_for_review(job_id, user)
+    video_name = job_data.get("video_name")
+    progress_data = job_data.get("progress")
     
-    # If not in memory, try MongoDB
-    if not video_name and Database.is_connected():
-        from backend.crud.jobs import get_job
-        job_doc = await get_job(job_id)
-        if job_doc:
-            video_name = job_doc.get("video_name")
-    
-    if not video_name:
+    if not video_name and not progress_data:
         raise HTTPException(status_code=404, detail="Job not found or video_name missing")
-        
+
+    if progress_data:
+        progress_script = build_script_from_progress(progress_data)
+    else:
+        progress_script = None
+
+    if not video_name:
+        if progress_script:
+            return {"script": progress_script}
+        raise HTTPException(status_code=404, detail="Job not found or video_name missing")
+
     output_dir = resolve_output_dir()
     script_path = output_dir / video_name / "tts_script.json"
     
     if not script_path.exists():
+        if progress_script:
+            return {"script": progress_script}
         # Return empty script if no script yet
         return {"script": {"segments": [], "total_segments": 0, "review_status": "pending"}}
         
@@ -762,29 +873,10 @@ async def get_job_script(job_id: str):
         with open(script_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         
-        # data is either a list of segments or already a dict
-        if isinstance(data, list):
-            segments = [
-                {
-                    "id": f"seg_{i:03d}",
-                    "text": seg.get("narration", seg.get("text", "")),
-                    "timing": seg.get("duration", seg.get("timing")),
-                    "action_type": seg.get("action_type", ""),
-                }
-                for i, seg in enumerate(data)
-            ]
-            return {
-                "script": {
-                    "segments": segments,
-                    "total_segments": len(segments),
-                    "reviewed_segments": 0,
-                    "approved_segments": 0,
-                    "review_status": "pending",
-                }
-            }
-        else:
-            # Already structured
-            return {"script": data}
+        script = build_script(data)
+        if script:
+            return {"script": script}
+        return {"script": data}
     except Exception as e:
         logger.error(f"Failed to read script: {e}")
         raise HTTPException(status_code=500, detail="Failed to read script")
@@ -813,7 +905,7 @@ async def get_job_script(job_id: str):
 
 
 @app.post("/api/jobs/{job_id}/review")
-async def submit_review(job_id: str, request: dict):
+async def submit_review(job_id: str, request: dict, user: dict = Depends(get_current_user)):
     """
     Submit reviewed TTS script and resume pipeline execution.
     
@@ -825,23 +917,9 @@ async def submit_review(job_id: str, request: dict):
     Returns:
         dict: Confirmation message
     """
-    # Get video_name from memory or MongoDB
-    video_name = None
-    async with job_queue_lock:
-        if job_id in job_queue:
-            job_data = job_queue[job_id]
-            video_name = job_data.get("video_name")
-            current_status = job_data.get("status")
-        else:
-            current_status = None
-    
-    # If not in memory, try MongoDB
-    if not video_name and Database.is_connected():
-        from backend.crud.jobs import get_job
-        job_doc = await get_job(job_id)
-        if job_doc:
-            video_name = job_doc.get("video_name")
-            current_status = job_doc.get("status")
+    job_data = await _get_authorized_job_for_review(job_id, user)
+    video_name = job_data.get("video_name")
+    current_status = job_data.get("status")
     
     if not video_name:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -874,7 +952,7 @@ async def submit_review(job_id: str, request: dict):
             {
                 "text": seg.get("text", seg.get("narration", "")),
                 "narration": seg.get("text", seg.get("narration", "")),
-                "narration_index": i,
+                "narration_index": seg.get("narration_index", seg.get("index", i)),
                 "duration": seg.get("timing"),
                 "action_type": seg.get("action_type", ""),
                 "edited": seg.get("edited", False),
@@ -883,13 +961,13 @@ async def submit_review(job_id: str, request: dict):
             for i, seg in enumerate(tts_script)
         ]
         
+        script_path.parent.mkdir(parents=True, exist_ok=True)
         with open(script_path, "w", encoding="utf-8") as f:
             json.dump(script_data, f, ensure_ascii=False, indent=2)
         
         logger.info(f"Job {job_id}: Saved reviewed script to {script_path}")
     except Exception as e:
-        logger.error(f"Failed to save reviewed script: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to save script: {str(e)}")
+        logger.warning(f"Failed to save reviewed script, continuing with Redis review: {e}", exc_info=True)
     
     # Submit review via Redis Pub/Sub to unblock worker
     try:

@@ -227,6 +227,15 @@ class AppLauncher:
         
         if wait_seconds is None:
             wait_seconds = default_wait
+
+        if app_type in ["chrome", "edge", "firefox"] and url:
+            force_new = True
+        if app_type in ["excel", "word", "powerpoint"] and not file_path:
+            force_new = True
+
+        existing_hwnds = set()
+        if force_new:
+            existing_hwnds = {w["hwnd"] for w in get_visible_windows()}
         
         # Check for existing window (unless force_new)
         if not force_new:
@@ -257,7 +266,15 @@ class AppLauncher:
                 self._launch_process(launch_cmd, wait_seconds)
                 
                 # Find the new window
-                new_window = self._find_window(window_filter)
+                if force_new and existing_hwnds:
+                    new_window = self._find_window(
+                        lambda w: window_filter(w) and w["hwnd"] not in existing_hwnds
+                    )
+                    if not new_window:
+                        logger.warning("New window not found, falling back to any matching window")
+                        new_window = self._find_window(window_filter)
+                else:
+                    new_window = self._find_window(window_filter)
                 
                 if new_window:
                     logger.info(f"Successfully launched {label} (PID={new_window['pid']})")
@@ -317,7 +334,14 @@ class AppLauncher:
         # Browsers: open with URL
         if app_type in ["chrome", "edge", "firefox"] and url:
             quoted_url = f'"{url}"'
+            if app_type in ["chrome", "edge"]:
+                return f'{base_command} --new-window {quoted_url}'
+            if app_type == "firefox":
+                return f'{base_command} -new-window {quoted_url}'
             return f'{base_command} {quoted_url}'
+
+        if app_type == "word" and not file_path:
+            return f'{base_command} /w'
         
         # Default: just launch app
         return base_command

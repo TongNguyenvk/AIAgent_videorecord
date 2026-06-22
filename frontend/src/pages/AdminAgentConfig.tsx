@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   fetchAgentConfig,
   updateAgentConfig,
   fetchGoogleOAuthStatus,
-  uploadGoogleOAuthToken,
   startGoogleOAuthLogin,
   testGemini,
   testTTS,
@@ -32,7 +31,6 @@ import {
   KeyRound,
   Sparkles,
   Cloud,
-  Upload,
   CheckCircle2,
   AlertTriangle,
   XCircle,
@@ -43,30 +41,28 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
-// Display copy for each OAuth warning level. Colour pairs are tuned for
-// both light and dark themes — the dark variants stay vivid, the light
-// variants are deeper hues that don't burn the user's retinas.
+// Display copy for each OAuth warning level.
 const OAUTH_LEVEL_META: Record<
   GoogleOAuthStatus["warning_level"],
   { label: string; tone: string; Icon: typeof CheckCircle2 }
 > = {
   ok: {
-    label: "Token hợp lệ",
+    label: "Google Drive đã sẵn sàng",
     tone: "border-emerald-500/40 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300",
     Icon: CheckCircle2,
   },
   warning: {
-    label: "Token hết hạn — sẽ tự refresh",
+    label: "Sắp cần đăng nhập lại",
     tone: "border-amber-500/40 bg-amber-50 text-amber-800 dark:bg-amber-500/10 dark:text-amber-300",
     Icon: AlertTriangle,
   },
   critical: {
-    label: "Token hết hạn không refresh được — cần upload lại",
+    label: "Cần đăng nhập lại Google",
     tone: "border-red-500/40 bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300",
     Icon: XCircle,
   },
   missing: {
-    label: "Chưa có token — job dùng Google Drive sẽ fail",
+    label: "Chưa kết nối Google Drive",
     tone: "border-red-500/40 bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300",
     Icon: XCircle,
   },
@@ -79,15 +75,13 @@ export function AdminAgentConfig() {
   const [fptKey, setFptKey] = useState("");
   const [model, setModel] = useState("");
   const [dirty, setDirty] = useState(false);
-  const oauthFileRef = useRef<HTMLInputElement>(null);
 
   const { data, isLoading, refetch } = useQuery<AgentConfig>({
     queryKey: ["agent-config", revealed],
     queryFn: () => fetchAgentConfig(revealed),
   });
 
-  // OAuth status — polled separately so an admin can see it go green
-  // right after upload without round-tripping the rest of the page.
+  // OAuth status is polled separately so the card updates after login.
   const {
     data: oauth,
     isLoading: oauthLoading,
@@ -96,17 +90,6 @@ export function AdminAgentConfig() {
     queryKey: ["google-oauth-status"],
     queryFn: fetchGoogleOAuthStatus,
     refetchInterval: 30000,
-  });
-
-  const oauthUpload = useMutation({
-    mutationFn: (file: File) => uploadGoogleOAuthToken(file),
-    onSuccess: (resp) => {
-      toast.success(resp.message);
-      queryClient.invalidateQueries({ queryKey: ["google-oauth-status"] });
-    },
-    onError: (err: Error) => {
-      toast.error(err.message);
-    },
   });
 
   // Web OAuth flow: open Google consent screen in a popup, listen for the
@@ -153,12 +136,6 @@ export function AdminAgentConfig() {
       setOauthInProgress(false);
       toast.error((err as Error).message);
     }
-  };
-
-  const onPickOAuthFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) oauthUpload.mutate(file);
-    e.target.value = "";
   };
 
   // TTS state — admin chooses default provider + voice + which providers users see
@@ -248,7 +225,7 @@ export function AdminAgentConfig() {
             <div>
               <CardTitle className="flex items-center gap-2">
                 <KeyRound className="w-5 h-5" />
-                API Keys
+                Khóa API
               </CardTitle>
               <CardDescription>
                 Trống nghĩa là giữ nguyên giá trị hiện tại. Chỉ ghi đè khi bạn nhập key
@@ -419,18 +396,9 @@ export function AdminAgentConfig() {
       <GoogleOAuthCard
         status={oauth}
         loading={oauthLoading}
-        uploading={oauthUpload.isPending}
         oauthInProgress={oauthInProgress}
         onRefresh={() => refetchOAuth()}
-        onPickFile={() => oauthFileRef.current?.click()}
         onLoginWithGoogle={onGoogleLogin}
-      />
-      <input
-        ref={oauthFileRef}
-        type="file"
-        accept=".pickle,application/octet-stream"
-        className="hidden"
-        onChange={onPickOAuthFile}
       />
     </div>
   );
@@ -439,27 +407,19 @@ export function AdminAgentConfig() {
 function GoogleOAuthCard({
   status,
   loading,
-  uploading,
   oauthInProgress,
   onRefresh,
-  onPickFile,
   onLoginWithGoogle,
 }: {
   status: GoogleOAuthStatus | undefined;
   loading: boolean;
-  uploading: boolean;
   oauthInProgress: boolean;
   onRefresh: () => void;
-  onPickFile: () => void;
   onLoginWithGoogle: () => void;
 }) {
   const level = status?.warning_level ?? "missing";
   const meta = OAUTH_LEVEL_META[level];
   const Icon = meta.Icon;
-
-  const expiryDisplay = status?.expiry
-    ? new Date(status.expiry).toLocaleString("vi-VN")
-    : "—";
 
   return (
     <Card className={meta.tone.split(" ").slice(0, 2).join(" ")}>
@@ -467,16 +427,16 @@ function GoogleOAuthCard({
         <div className="flex items-start justify-between">
           <div>
             <CardTitle className="flex items-center gap-2">
-              <Cloud className="w-5 h-5" />
-              Google Drive OAuth
+                <Cloud className="w-5 h-5" />
+              Kết nối Google Drive
             </CardTitle>
             <CardDescription>
-              Token đăng nhập Google cho worker upload Slides. Đăng nhập ngay từ admin UI
-              — KHÔNG cần SSH vào VPS.
+              Dùng để worker upload Slides lên Google Drive. Khi trạng thái không sẵn
+              sàng, hãy đăng nhập lại bằng nút bên dưới.
             </CardDescription>
           </div>
           <Button variant="ghost" size="sm" onClick={onRefresh} disabled={loading}>
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Kiểm tra lại"}
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : "Kiểm tra"}
           </Button>
         </div>
       </CardHeader>
@@ -485,54 +445,12 @@ function GoogleOAuthCard({
           className={`flex items-center gap-3 px-4 py-3 rounded-lg border ${meta.tone}`}
         >
           <Icon className="w-5 h-5 shrink-0" />
-          <div className="text-sm font-medium">{meta.label}</div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3 text-sm">
-          <div className="space-y-1">
-            <div className="text-muted-foreground">Token file</div>
-            <div className="font-mono text-xs break-all">{status?.token_path || "—"}</div>
-          </div>
-          <div className="space-y-1">
-            <div className="text-muted-foreground">Credentials JSON</div>
-            <div className="flex items-center gap-2">
-              {status?.credentials_file_exists ? (
-                <Badge
-                  variant="outline"
-                  className="text-emerald-700 border-emerald-500/40 dark:text-emerald-300"
-                >
-                  Có sẵn
-                </Badge>
-              ) : (
-                <Badge
-                  variant="outline"
-                  className="text-red-700 border-red-500/40 dark:text-red-300"
-                >
-                  Thiếu — không refresh được
-                </Badge>
-              )}
-            </div>
-          </div>
-          <div className="space-y-1">
-            <div className="text-muted-foreground">Hết hạn</div>
-            <div>{expiryDisplay}</div>
-          </div>
-          <div className="space-y-1">
-            <div className="text-muted-foreground">Refresh token</div>
-            <div>{status?.has_refresh_token ? "Có" : "Không"}</div>
-          </div>
-          <div className="space-y-1 col-span-2">
-            <div className="text-muted-foreground">Scopes</div>
-            <div className="flex flex-wrap gap-1">
-              {(status?.scopes || []).length === 0 ? (
-                <span className="text-muted-foreground text-xs">—</span>
-              ) : (
-                status?.scopes.map((s) => (
-                  <Badge key={s} variant="outline" className="font-mono text-xs">
-                    {s.replace("https://www.googleapis.com/auth/", "")}
-                  </Badge>
-                ))
-              )}
+          <div>
+            <div className="text-sm font-medium">{meta.label}</div>
+            <div className="text-xs opacity-80 mt-0.5">
+              {level === "ok"
+                ? "Có thể chạy job Google Slides."
+                : "Job Google Slides cần đăng nhập Google trước khi chạy."}
             </div>
           </div>
         </div>
@@ -548,45 +466,8 @@ function GoogleOAuthCard({
           ) : (
             <LogIn className="w-4 h-4 mr-2" />
           )}
-          Đăng nhập với Google
+          {level === "ok" ? "Đăng nhập lại với Google" : "Đăng nhập với Google"}
         </Button>
-
-        <details className="text-xs text-muted-foreground">
-          <summary className="cursor-pointer hover:text-foreground select-none">
-            Hoặc upload file .pickle có sẵn (cách cũ, cần CLI)
-          </summary>
-          <div className="mt-3 space-y-3 rounded-lg border border-muted bg-muted/30 p-3">
-            <ol className="list-decimal list-inside space-y-1">
-              <li>
-                Trên máy có browser, chạy:{" "}
-                <code className="px-1.5 py-0.5 rounded bg-background border">
-                  python webreel-ai-agent/refresh_google_oauth_token.py
-                </code>
-              </li>
-              <li>
-                Hoàn tất đăng nhập, script lưu file{" "}
-                <code className="px-1.5 py-0.5 rounded bg-background border">
-                  google_oauth_token.pickle
-                </code>
-                .
-              </li>
-              <li>Bấm nút bên dưới và chọn file vừa sinh.</li>
-            </ol>
-            <Button
-              onClick={onPickFile}
-              disabled={uploading}
-              variant="outline"
-              className="w-full"
-            >
-              {uploading ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Upload className="w-4 h-4 mr-2" />
-              )}
-              Upload token (.pickle)
-            </Button>
-          </div>
-        </details>
       </CardContent>
     </Card>
   );
@@ -630,7 +511,7 @@ function GeminiTestButton({ apiKey, model }: { apiKey: string; model: string }) 
         ) : (
           <ListChecks className="w-4 h-4 mr-2" />
         )}
-        Test key + model
+        Kiểm tra key và model
       </Button>
       {result && (
         <div
@@ -640,7 +521,7 @@ function GeminiTestButton({ apiKey, model }: { apiKey: string; model: string }) 
               : "border-red-500/40 bg-red-50 text-red-700 dark:bg-red-500/10 dark:text-red-300"
           }`}
         >
-          {result.ok ? "✓" : "✗"} {result.detail}
+          {result.ok ? "OK" : "Lỗi"}: {result.detail}
           {result.latency_ms ? ` (${result.latency_ms}ms)` : ""}
         </div>
       )}
@@ -689,21 +570,21 @@ function TTSConfigCard({
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Mic className="w-5 h-5" />
-          TTS Provider
+          Nhà cung cấp TTS
         </CardTitle>
         <CardDescription>
-          Provider hiện đang dùng:{" "}
+          Nhà cung cấp hiện đang dùng:{" "}
           <Badge variant="outline" className="font-mono">
             edge
           </Badge>{" "}
-          (Edge TTS, miễn phí). Bật thêm provider nào ở đây thì user mới thấy được trong
-          form Tạo Job.
+          (Edge TTS, miễn phí). Bật thêm nhà cung cấp nào ở đây thì người dùng mới thấy
+          được trong form tạo job.
         </CardDescription>
       </CardHeader>
 
       <CardContent className="space-y-5">
         <div>
-          <Label className="mb-2 block">Provider được phép sử dụng</Label>
+          <Label className="mb-2 block">Nhà cung cấp được phép sử dụng</Label>
           <div className="space-y-2">
             {providers.map((p) => {
               const checked = enabledIds.includes(p.id);
@@ -754,7 +635,7 @@ function TTSConfigCard({
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-2">
-            <Label htmlFor="tts_default_provider">Provider mặc định</Label>
+            <Label htmlFor="tts_default_provider">Nhà cung cấp mặc định</Label>
             <select
               id="tts_default_provider"
               value={defaultProvider}
@@ -880,7 +761,7 @@ function TTSTestInline({
           className="text-xs text-red-700 dark:text-red-300 max-w-[220px] truncate"
           title={error}
         >
-          ✗ {error}
+          Lỗi: {error}
         </span>
       )}
     </div>

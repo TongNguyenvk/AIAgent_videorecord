@@ -3,6 +3,18 @@ import { Users, Video, TrendingUp, Shield } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchAdminStats } from "@/lib/api";
 
+const STATUS_LABELS: Record<string, string> = {
+  pending: "Đang chờ",
+  queued: "Trong hàng đợi",
+  running: "Đang chạy",
+  processing: "Đang xử lý",
+  pending_review: "Chờ duyệt",
+  completed: "Hoàn thành",
+  failed: "Thất bại",
+  cancelled: "Đã hủy",
+  interrupted: "Bị gián đoạn",
+};
+
 export function AdminDashboard() {
   const { data: stats, isLoading } = useQuery({
     queryKey: ["admin-stats"],
@@ -13,7 +25,7 @@ export function AdminDashboard() {
   if (isLoading || !stats) {
     return (
       <div className="space-y-8">
-        <h1 className="text-4xl font-extrabold">Admin Dashboard</h1>
+        <h1 className="text-4xl font-extrabold">Bảng điều khiển quản trị</h1>
         <div className="grid gap-6 md:grid-cols-4">
           {[1, 2, 3, 4].map((i) => (
             <Card
@@ -37,7 +49,7 @@ export function AdminDashboard() {
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div>
         <h1 className="text-4xl font-extrabold tracking-tight bg-gradient-to-br from-foreground to-muted-foreground bg-clip-text text-transparent">
-          System Overview
+          Tổng quan hệ thống
         </h1>
         <p className="text-muted-foreground mt-2 text-lg">
           Tổng quan hệ thống và thống kê
@@ -65,7 +77,7 @@ export function AdminDashboard() {
         <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-white/5 dark:backdrop-blur-xl">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-gray-600 dark:text-gray-400">
-              Tổng Jobs
+              Tổng job
             </CardTitle>
             <Video className="h-4 w-4 text-purple-500" />
           </CardHeader>
@@ -82,15 +94,15 @@ export function AdminDashboard() {
         <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-white/5 dark:backdrop-blur-xl">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-gray-600 dark:text-gray-400">
-              Tier Distribution
+              Phân bổ gói
             </CardTitle>
             <TrendingUp className="h-4 w-4 text-emerald-500" />
           </CardHeader>
           <CardContent>
             <div className="space-y-1 text-gray-700 dark:text-gray-300">
-              <div className="text-sm">Free: {stats.users.by_tier.free}</div>
-              <div className="text-sm">Pro: {stats.users.by_tier.pro}</div>
-              <div className="text-sm">Enterprise: {stats.users.by_tier.enterprise}</div>
+              <div className="text-sm">Miễn phí: {stats.users.by_tier.free}</div>
+              <div className="text-sm">Chuyên nghiệp: {stats.users.by_tier.pro}</div>
+              <div className="text-sm">Doanh nghiệp: {stats.users.by_tier.enterprise}</div>
             </div>
           </CardContent>
         </Card>
@@ -98,7 +110,7 @@ export function AdminDashboard() {
         <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-white/5 dark:backdrop-blur-xl">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-gray-600 dark:text-gray-400">
-              Admins
+              Quản trị viên
             </CardTitle>
             <Shield className="h-4 w-4 text-red-500" />
           </CardHeader>
@@ -107,7 +119,7 @@ export function AdminDashboard() {
               {stats.users.by_role.admin}
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-              {stats.users.by_role.user} regular users
+              {stats.users.by_role.user} người dùng thường
             </p>
           </CardContent>
         </Card>
@@ -117,7 +129,7 @@ export function AdminDashboard() {
         <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-white/5 dark:backdrop-blur-xl">
           <CardHeader>
             <CardTitle className="text-gray-900 dark:text-white">
-              Job Status Distribution
+              Phân bổ trạng thái job
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -125,7 +137,7 @@ export function AdminDashboard() {
               {Object.entries(stats.jobs.by_status || {}).map(([status, count]) => (
                 <div key={status} className="flex items-center justify-between">
                   <span className="text-sm capitalize text-gray-600 dark:text-gray-400">
-                    {status}
+                    {STATUS_LABELS[status] || status}
                   </span>
                   <span className="text-lg font-bold text-gray-900 dark:text-white">
                     {count as number}
@@ -138,13 +150,13 @@ export function AdminDashboard() {
 
         <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-white/5 dark:backdrop-blur-xl">
           <CardHeader>
-            <CardTitle className="text-gray-900 dark:text-white">Quick Stats</CardTitle>
+            <CardTitle className="text-gray-900 dark:text-white">Thống kê nhanh</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-600 dark:text-gray-400">
-                  Total Users
+                  Tổng người dùng
                 </span>
                 <span className="text-lg font-bold text-gray-900 dark:text-white">
                   {stats.users.total}
@@ -152,7 +164,7 @@ export function AdminDashboard() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-600 dark:text-gray-400">
-                  Total Jobs
+                  Tổng job
                 </span>
                 <span className="text-lg font-bold text-gray-900 dark:text-white">
                   {stats.jobs.total}
@@ -160,10 +172,13 @@ export function AdminDashboard() {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-600 dark:text-gray-400">
-                  Active Rate
+                  Tỷ lệ hoạt động
                 </span>
                 <span className="text-lg font-bold text-gray-900 dark:text-white">
-                  {((stats.users.active / stats.users.total) * 100).toFixed(1)}%
+                  {stats.users.total
+                    ? ((stats.users.active / stats.users.total) * 100).toFixed(1)
+                    : "0.0"}
+                  %
                 </span>
               </div>
             </div>

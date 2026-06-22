@@ -5,13 +5,17 @@ All endpoints require admin role.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Request
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, EmailStr, Field
+from typing import Literal, Optional
+from datetime import datetime, timedelta, timezone
 import logging
 
 from backend.auth import get_current_admin, get_current_user
+from backend.auth import hash_password
 from backend.crud.users import (
     list_users,
+    create_user,
+    get_user_by_email,
     get_user_by_id,
     update_user_tier,
     suspend_user,
@@ -21,12 +25,52 @@ from backend.crud.jobs import (
     list_jobs,
     get_job_stats,
     get_user_job_stats,
-    get_job_by_id
+    get_job_by_id,
+    cancel_job
 )
+from backend.queue import JobQueue
 from backend.crud.agent_config import get_agent_config, update_agent_config, DEFAULT_GEMINI_MODEL
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
+
+
+ADMIN_CANCEL_REASONS = {
+    "policy_violation": "Nội dung vi phạm",
+    "misuse": "Dùng sai mục đích",
+    "invalid_material": "Tài liệu không hợp lệ",
+    "other": "Khác",
+}
+
+
+class AdminCreateUserRequest(BaseModel):
+    email: EmailStr
+    name: str = Field(..., min_length=1, max_length=100)
+    password: str = Field(..., min_length=8, max_length=100)
+    role: Literal["user", "admin"] = "user"
+    tier: Literal["free", "pro", "enterprise"] = "free"
+    videos_per_month: int = Field(default=100, ge=0, le=100000)
+
+
+class AdminCancelJobRequest(BaseModel):
+    reason_code: Literal["policy_violation", "misuse", "invalid_material", "other"]
+
+
+def _scrub_admin_created_user(user: dict) -> dict:
+    """Return a user document without sensitive auth fields."""
+    safe_user = dict(user)
+    if "_id" in safe_user:
+        safe_user["_id"] = str(safe_user["_id"])
+    for key in (
+        "password_hash",
+        "verification_token",
+        "verification_token_expires",
+        "reset_token",
+        "reset_token_expires",
+        "google_id",
+    ):
+        safe_user.pop(key, None)
+    return safe_user
 
 
 @router.get("/users")
@@ -71,6 +115,67 @@ async def admin_list_users(
         "total": len(users),
         "skip": skip,
         "limit": limit
+    }
+
+
+@router.post("/users", status_code=status.HTTP_201_CREATED)
+async def admin_create_user(
+    payload: AdminCreateUserRequest,
+    admin: dict = Depends(get_current_admin)
+):
+    """
+    Create an active, email-verified user from the admin UI.
+    """
+    email = payload.email.lower().strip()
+    name = payload.name.strip()
+    password = payload.password
+
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tên là bắt buộc"
+        )
+    if not any(ch.isalpha() for ch in password) or not any(ch.isdigit() for ch in password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mật khẩu phải có ít nhất một chữ cái và một chữ số"
+        )
+
+    existing_user = await get_user_by_email(email)
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email đã được đăng ký"
+        )
+
+    user = await create_user({
+        "email": email,
+        "name": name,
+        "password_hash": hash_password(password),
+        "auth_provider": "local",
+        "role": payload.role,
+        "tier": payload.tier,
+        "status": "active",
+        "email_verified": True,
+        "verification_token": None,
+        "verification_token_expires": None,
+        "reset_token": None,
+        "reset_token_expires": None,
+        "quota": {
+            "videos_per_month": payload.videos_per_month,
+            "videos_used_this_month": 0,
+            "reset_date": datetime.now(timezone.utc) + timedelta(days=30),
+        },
+    })
+
+    logger.warning(
+        f"Admin {admin['email']} created {payload.role} user {email} "
+        f"(tier={payload.tier}, quota={payload.videos_per_month})"
+    )
+
+    return {
+        "message": "Đã tạo người dùng",
+        "user": _scrub_admin_created_user(user),
     }
 
 
@@ -273,6 +378,64 @@ async def admin_get_job(
     logger.info(f"Admin {admin['email']} viewed job {job_id}")
     
     return job
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def admin_cancel_running_job(
+    job_id: str,
+    payload: AdminCancelJobRequest,
+    admin: dict = Depends(get_current_admin)
+):
+    """Cancel a running job and ask the autoscaler to stop its worker."""
+    job = await get_job_by_id(job_id)
+
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Không tìm thấy job"
+        )
+
+    if job.get("status") != "running":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chỉ có thể dừng job đang chạy"
+        )
+
+    reason_label = ADMIN_CANCEL_REASONS[payload.reason_code]
+    cancel_message = f"Job đã bị dừng bởi quản trị viên: {reason_label}"
+    success = await cancel_job(
+        job_id,
+        cancelled_by_role="admin",
+        cancelled_by_user_id=admin.get("user_id"),
+        reason_code=payload.reason_code,
+        reason_label=reason_label,
+        message=cancel_message,
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Không thể dừng job ở trạng thái hiện tại"
+        )
+
+    queue = JobQueue()
+    removed_count = queue.remove_job_from_queues(job_id)
+    kill_published = queue.publish_job_kill(job_id)
+
+    logger.warning(
+        f"Admin {admin['email']} cancelled job {job_id}: {reason_label} "
+        f"(removed_queue_items={removed_count}, kill_published={kill_published})"
+    )
+
+    return {
+        "message": "Đã dừng job",
+        "job_id": job_id,
+        "status": "cancelled",
+        "reason_code": payload.reason_code,
+        "reason_label": reason_label,
+        "removed_queue_items": removed_count,
+        "kill_published": kill_published,
+    }
 
 
 @router.get("/stats")

@@ -26,7 +26,7 @@ import signal
 import sys
 import time
 import ctypes
-from typing import Optional
+from typing import Any, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -76,6 +76,7 @@ TUNNEL_HEALTH_CHECK_INTERVAL = int(os.getenv("TUNNEL_HEALTH_CHECK_INTERVAL", "60
 HEALTH_CHECK_ENABLED = os.getenv("HEALTH_CHECK_ENABLED", "true").lower() == "true"
 HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "60"))  # seconds
 HEARTBEAT_TTL = int(os.getenv("HEARTBEAT_TTL", "120"))  # Redis key TTL
+REVIEW_TIMEOUT_SECONDS = int(os.getenv("REVIEW_TIMEOUT_SECONDS", "1800"))
 
 # Graceful shutdown flag
 shutdown_requested = False
@@ -190,6 +191,55 @@ def set_worker_heartbeat(queue: 'JobQueue', worker_id: str, status: str = "idle"
         return False
 
 
+def wait_for_review_sync(queue: 'JobQueue', job_id: str, timeout_seconds: int = 1800) -> Optional[list]:
+    """Wait for an approved TTS script on the Redis review channel."""
+    if not queue.redis:
+        logger.warning("Redis not available, review wait will be skipped")
+        return None
+
+    review_channel = f"job:{job_id}:review_approved"
+    pubsub = queue.redis.pubsub()
+    deadline = time.time() + timeout_seconds
+
+    logger.info(f"Job {job_id} waiting for Phase 2.5 review on {review_channel}")
+
+    try:
+        pubsub.subscribe(review_channel)
+
+        while time.time() < deadline and not shutdown_requested:
+            message = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+            if not message or message.get("type") != "message":
+                continue
+
+            payload: Any = message.get("data")
+            if isinstance(payload, bytes):
+                payload = payload.decode("utf-8")
+
+            try:
+                data = json.loads(payload) if isinstance(payload, str) else payload
+            except json.JSONDecodeError:
+                logger.warning(f"Job {job_id}: invalid review payload")
+                continue
+
+            if isinstance(data, dict):
+                approved_script = data.get("tts_script")
+                if approved_script:
+                    logger.info(f"Job {job_id} review approved with {len(approved_script)} segments")
+                    return approved_script
+
+        logger.warning(f"Job {job_id} review timed out, continuing with generated script")
+        return None
+    except Exception as e:
+        logger.error(f"Job {job_id}: error while waiting for review: {e}", exc_info=True)
+        return None
+    finally:
+        try:
+            pubsub.unsubscribe(review_channel)
+            pubsub.close()
+        except Exception:
+            pass
+
+
 def process_os_job(job: dict) -> dict:
     """Process a single OS pipeline job.
     
@@ -209,8 +259,9 @@ def process_os_job(job: dict) -> dict:
     Pipeline phases:
       Phase 0: App Launch (V4 only)
       Phase 1: Agent planning (Gemini + UIA + screenshot)
+      Phase 2.5: TTS script review
       Phase 2: TTS generation (Edge TTS)
-      Phase 2.5: Inject exact durations
+      Phase 2.6: Inject exact durations
       Phase 2.75: Auto-reset state (V4 only)
       Phase 3: Record-replay + screenshot capture
       Phase 4: Audio mixing (trace_composer)
@@ -276,6 +327,33 @@ def process_os_job(job: dict) -> dict:
             }
 
     try:
+        queue_client = JobQueue()
+
+        def pipeline_progress_callback(phase: float, message: str, data: Any = None) -> Optional[list]:
+            if phase == 2.5 and config.get("enable_review", True):
+                if queue_client.redis:
+                    queue_client.redis.set(f"job:{job_id}:status", "pending_review", ex=86400)
+                queue_client.notify_api_progress(job_id, phase, "Waiting for user review", data)
+
+                approved_script = wait_for_review_sync(
+                    queue_client,
+                    job_id,
+                    timeout_seconds=REVIEW_TIMEOUT_SECONDS,
+                )
+
+                if queue_client.redis:
+                    queue_client.redis.set(f"job:{job_id}:status", "processing", ex=86400)
+
+                if approved_script:
+                    logger.info(f"Job {job_id} review approved, resuming pipeline")
+                    return approved_script
+
+                logger.warning(f"Job {job_id} review not approved before timeout, resuming pipeline")
+                return None
+
+            queue_client.notify_api_progress(job_id, phase, message, data)
+            return None
+
         # Run appropriate pipeline
         if use_v4_pipeline:
             from os_recorder.os_pipeline_v4_auto import run_os_pipeline_v4_auto
@@ -290,6 +368,8 @@ def process_os_job(job: dict) -> dict:
                 voice=config.get("voice", "banmai"),
                 max_agent_steps=config.get("max_steps", 15),
                 enable_dual_output=config.get("enable_dual_output", True),
+                enable_review=config.get("enable_review", True),
+                progress_callback=pipeline_progress_callback,
             )
         else:
             # V3 Pipeline (legacy)
@@ -308,6 +388,24 @@ def process_os_job(job: dict) -> dict:
                 app_executable=app_executable,
                 enable_dual_output=config.get("enable_dual_output", True),
             )
+
+        if result.get("error"):
+            return {
+                "status": "failed",
+                "job_id": job_id,
+                "error": result["error"],
+                "completed_at": time.time(),
+                "worker_id": WORKER_ID,
+            }
+
+        if not result.get("video_final_path"):
+            return {
+                "status": "failed",
+                "job_id": job_id,
+                "error": "OS pipeline completed without video output",
+                "completed_at": time.time(),
+                "worker_id": WORKER_ID,
+            }
 
         # Upload results to VPS
         upload_success = False

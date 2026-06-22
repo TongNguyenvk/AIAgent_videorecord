@@ -185,11 +185,19 @@ async def get_job_by_id(job_id: str) -> Optional[dict]:
     return await get_job(job_id)
 
 
-async def cancel_job(job_id: str) -> bool:
+async def cancel_job(
+    job_id: str,
+    *,
+    cancelled_by_role: str = "user",
+    cancelled_by_user_id: Optional[str] = None,
+    reason_code: Optional[str] = None,
+    reason_label: Optional[str] = None,
+    message: Optional[str] = None,
+) -> bool:
     """
     Cancel a job.
-    
-    Only cancels if status is pending, running, or queued.
+
+    Only running jobs can be cancelled from the UI.
     
     Args:
         job_id: UUID string
@@ -202,17 +210,30 @@ async def cancel_job(job_id: str) -> bool:
         return False
     
     try:
+        now = datetime.now(timezone.utc)
+        cancel_message = message or (
+            reason_label
+            if cancelled_by_role == "admin" and reason_label
+            else "Job đã được người dùng dừng"
+        )
+
         result = await db.jobs.update_one(
             {
                 "job_id": job_id,
-                "status": {"$in": ["pending", "running", "queued"]},
+                "status": "running",
                 "deleted_at": None
             },
             {
                 "$set": {
                     "status": "cancelled",
-                    "error": "Cancelled by user",
-                    "completed_at": datetime.now(timezone.utc)
+                    "error": cancel_message,
+                    "cancelled_at": now,
+                    "cancelled_by_role": cancelled_by_role,
+                    "cancelled_by_user_id": cancelled_by_user_id,
+                    "cancel_reason_code": reason_code,
+                    "cancel_reason_label": reason_label,
+                    "cancel_message": cancel_message,
+                    "completed_at": now
                 }
             }
         )
@@ -221,7 +242,7 @@ async def cancel_job(job_id: str) -> bool:
             logger.info(f"Job cancelled: {job_id}")
             return True
         else:
-            logger.warning(f"Cannot cancel job {job_id} (not in cancellable status)")
+            logger.warning(f"Cannot cancel job {job_id} (not running)")
             return False
             
     except Exception as e:

@@ -36,10 +36,10 @@ const NOVNC_URL =
 
 // Tên hiển thị thân thiện cho từng queue
 const QUEUE_LABELS: Record<string, string> = {
-  "web-queue": "Web Tutorial",
-  "presentation-queue": "Presentation (OneDrive)",
-  "presentation-gg-queue": "Presentation (Google)",
-  "office-queue": "Office (Slide-to-Video)",
+  "web-queue": "Web hướng dẫn",
+  "presentation-queue": "Trình chiếu OneDrive",
+  "presentation-gg-queue": "Trình chiếu Google",
+  "office-queue": "Office",
 };
 
 export function AdminSessionManager() {
@@ -81,22 +81,22 @@ export function AdminSessionManager() {
   const freezeMutation = useMutation({
     mutationFn: freezeSession,
     onSuccess: () => {
-      toast.success("Session saved and frozen successfully!");
+      toast.success("Đã lưu và đóng băng phiên");
       refetchStatus();
     },
     onError: (error: Error) => {
-      toast.error(`Failed to freeze session: ${error.message}`);
+      toast.error(`Không thể lưu phiên: ${error.message}`);
     },
   });
 
   const resumeMutation = useMutation({
     mutationFn: (queueName: string) => resumeQueue(queueName),
     onSuccess: (_data, queueName) => {
-      toast.success(`Queue "${QUEUE_LABELS[queueName] || queueName}" has been resumed!`);
+      toast.success(`Đã mở lại "${QUEUE_LABELS[queueName] || queueName}"`);
       queryClient.invalidateQueries({ queryKey: ["queue-status"] });
     },
     onError: (error: Error) => {
-      toast.error(`Failed to resume queue: ${error.message}`);
+      toast.error(`Không thể mở lại hàng đợi: ${error.message}`);
     },
   });
 
@@ -114,13 +114,13 @@ export function AdminSessionManager() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case "ready":
-        return <Badge className="bg-emerald-500">Ready</Badge>;
+        return <Badge className="bg-emerald-500">Sẵn sàng</Badge>;
       case "frozen":
-        return <Badge className="bg-blue-500">Frozen</Badge>;
+        return <Badge className="bg-blue-500">Đã lưu phiên</Badge>;
       case "unavailable":
-        return <Badge className="bg-red-500">Unavailable</Badge>;
+        return <Badge className="bg-red-500">Không khả dụng</Badge>;
       default:
-        return <Badge variant="outline">{status || "Unknown"}</Badge>;
+        return <Badge variant="outline">{status || "Không rõ"}</Badge>;
     }
   };
 
@@ -132,25 +132,23 @@ export function AdminSessionManager() {
     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
       <div>
         <h1 className="text-4xl font-extrabold tracking-tight bg-gradient-to-br from-foreground to-muted-foreground bg-clip-text text-transparent">
-          Session Manager
+          Quản lý phiên đăng nhập
         </h1>
         <p className="text-muted-foreground mt-2 text-lg">
-          Log in to Microsoft/Google here, then save & freeze for Workers to use
+          Đăng nhập Microsoft hoặc Google tại đây, sau đó lưu phiên để worker dùng.
         </p>
       </div>
 
-      {/* Circuit Breaker Alert */}
       {hasPausedQueues && (
         <Card className="border-2 border-red-500 shadow-lg shadow-red-500/10 bg-red-50 dark:bg-red-950/30 dark:border-red-500/60 animate-in fade-in slide-in-from-top-2 duration-500">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-red-700 dark:text-red-400">
               <ShieldAlert className="w-5 h-5" />
-              Circuit Breaker Activated - Session Expired
+              Hàng đợi đã tạm dừng do phiên hết hạn
             </CardTitle>
             <CardDescription className="text-red-600 dark:text-red-400/80">
-              One or more queues have been paused because the Chrome session has expired.
-              Please log in again in the browser below, then click "Save & Freeze", and
-              resume the queues.
+              Một hoặc nhiều hàng đợi đang dừng để tránh job lỗi lặp lại. Hãy đăng
+              nhập lại trong trình duyệt bên dưới, lưu phiên, rồi mở lại hàng đợi.
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -166,14 +164,14 @@ export function AdminSessionManager() {
                       <span className="font-semibold text-sm">
                         {QUEUE_LABELS[queueName] || queueName}
                       </span>
-                      <Badge className="bg-red-500 text-xs">Paused</Badge>
+                      <Badge className="bg-red-500 text-xs">Đã tạm dừng</Badge>
                     </div>
                     {info.pause_info && (
                       <div className="text-xs text-muted-foreground mt-1 ml-6">
-                        <span>Reason: {info.pause_info.reason}</span>
+                        <span>Lý do: {info.pause_info.reason}</span>
                         {info.pause_info.paused_at && (
                           <span className="ml-3">
-                            Since: {formatPauseTime(info.pause_info.paused_at)}
+                            Từ: {formatPauseTime(info.pause_info.paused_at)}
                           </span>
                         )}
                       </div>
@@ -191,7 +189,7 @@ export function AdminSessionManager() {
                     ) : (
                       <Play className="w-4 h-4 mr-1" />
                     )}
-                    Resume
+                    Mở lại
                   </Button>
                 </div>
               ))}
@@ -200,13 +198,12 @@ export function AdminSessionManager() {
         </Card>
       )}
 
-      {/* Session Status + Queue Status Cards */}
       <div className="grid gap-6 md:grid-cols-4">
         <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-black/40 dark:backdrop-blur-2xl">
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <Server className="w-4 h-4" />
-              Session Manager Status
+              Trạng thái phiên
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -227,14 +224,14 @@ export function AdminSessionManager() {
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <Clock className="w-4 h-4" />
-              Last Frozen
+              Lần lưu gần nhất
             </CardTitle>
           </CardHeader>
           <CardContent>
             {lastFrozenTime ? (
               <span className="text-lg font-semibold">{lastFrozenTime}</span>
             ) : (
-              <span className="text-muted-foreground">Never</span>
+              <span className="text-muted-foreground">Chưa lưu</span>
             )}
           </CardContent>
         </Card>
@@ -243,7 +240,7 @@ export function AdminSessionManager() {
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <HardDrive className="w-4 h-4" />
-              Archive Size
+              Dung lượng phiên
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -267,7 +264,7 @@ export function AdminSessionManager() {
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-sm font-medium">
               <ShieldAlert className="w-4 h-4" />
-              Circuit Breaker
+              Bảo vệ hàng đợi
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -276,18 +273,17 @@ export function AdminSessionManager() {
             ) : hasPausedQueues ? (
               <div className="flex items-center gap-2">
                 <Badge className="bg-red-500">
-                  {pausedQueues.length} queue(s) paused
+                  {pausedQueues.length} hàng đợi tạm dừng
                 </Badge>
                 <AlertTriangle className="w-4 h-4 text-red-500 animate-pulse" />
               </div>
             ) : (
-              <Badge className="bg-emerald-500">All queues running</Badge>
+              <Badge className="bg-emerald-500">Tất cả đang chạy</Badge>
             )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Queue Status Detail */}
       {queueStatus?.queues && (
         <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-black/40 dark:backdrop-blur-2xl">
           <CardHeader>
@@ -295,16 +291,15 @@ export function AdminSessionManager() {
               <div>
                 <CardTitle className="flex items-center gap-2 text-base">
                   <ShieldAlert className="w-5 h-5" />
-                  Queue Status (Circuit Breaker)
+                  Trạng thái hàng đợi
                 </CardTitle>
                 <CardDescription className="mt-1">
-                  When a session expires, the affected queue is automatically paused to
-                  prevent repeated failures.
+                  Khi phiên đăng nhập hết hạn, hệ thống tự tạm dừng hàng đợi liên quan.
                 </CardDescription>
               </div>
               <Button variant="outline" size="sm" onClick={() => refetchQueues()}>
                 <RefreshCw className="w-4 h-4 mr-2" />
-                Refresh
+                Làm mới
               </Button>
             </div>
           </CardHeader>
@@ -331,7 +326,7 @@ export function AdminSessionManager() {
                       </span>
                     </div>
                     <span className="text-xs text-muted-foreground ml-6">
-                      {info.paused ? "Paused" : "Running"}
+                      {info.paused ? "Đã tạm dừng" : "Đang chạy"}
                     </span>
                   </div>
                   {info.paused && (
@@ -346,7 +341,7 @@ export function AdminSessionManager() {
                       ) : (
                         <Play className="w-4 h-4 mr-1" />
                       )}
-                      Resume
+                      Mở lại
                     </Button>
                   )}
                 </div>
@@ -356,23 +351,21 @@ export function AdminSessionManager() {
         </Card>
       )}
 
-      {/* Freeze Action */}
       <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-black/40 dark:backdrop-blur-2xl">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Snowflake className="w-5 h-5" />
-            Save & Freeze Session
+            Lưu phiên cho worker
           </CardTitle>
           <CardDescription>
-            Safely shut down Chrome and archive the profile. Workers will use this
-            archive.
+            Đóng Chrome an toàn và lưu lại profile để worker dùng cho các job mới.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-between p-4 bg-gray-50 dark:bg-white/5 rounded-lg">
             <div className="text-sm text-gray-600 dark:text-gray-400">
-              <strong>Note:</strong> Make sure you have logged in to the required
-              platforms (Microsoft, Google) in the browser below before freezing.
+              Hãy đảm bảo đã đăng nhập các nền tảng cần thiết trong trình duyệt bên dưới
+              trước khi lưu phiên.
             </div>
             <Button
               onClick={() => freezeMutation.mutate()}
@@ -382,12 +375,12 @@ export function AdminSessionManager() {
               {freezeMutation.isPending ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Freezing...
+                  Đang lưu...
                 </>
               ) : (
                 <>
                   <Snowflake className="w-4 h-4 mr-2" />
-                  Save & Freeze
+                  Lưu phiên
                 </>
               )}
             </Button>
@@ -395,18 +388,17 @@ export function AdminSessionManager() {
         </CardContent>
       </Card>
 
-      {/* noVNC Viewer */}
       <Card className="border border-gray-200 shadow-lg bg-white dark:border-white/10 dark:bg-black/40 dark:backdrop-blur-2xl">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
               <CardTitle className="flex items-center gap-2">
                 <Monitor className="w-5 h-5" />
-                Remote Browser (Session Manager)
+                Trình duyệt từ xa
               </CardTitle>
               <CardDescription className="mt-2">
-                Use noVNC to log in to Microsoft/Google. After logging in, press "Save &
-                Freeze" above.
+                Dùng noVNC để đăng nhập Microsoft hoặc Google. Sau khi đăng nhập xong,
+                bấm "Lưu phiên" ở phía trên.
               </CardDescription>
             </div>
             <Button
@@ -418,7 +410,7 @@ export function AdminSessionManager() {
               }}
             >
               <RefreshCw className="w-4 h-4 mr-2" />
-              Refresh
+              Làm mới
             </Button>
           </div>
         </CardHeader>
@@ -426,9 +418,8 @@ export function AdminSessionManager() {
           <div className="space-y-4">
             <div className="bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/20 rounded-lg p-4">
               <p className="text-sm text-blue-800 dark:text-blue-200">
-                <strong>Instructions:</strong> Log in to the required platforms (Microsoft
-                365, Google/Gmail...) in this browser. When finished, press the "Save &
-                Freeze" button to save the session for Workers.
+                Đăng nhập các nền tảng cần dùng như Microsoft 365 hoặc Google trong trình
+                duyệt này. Khi xong, bấm "Lưu phiên" để worker sử dụng.
               </p>
             </div>
 
@@ -442,7 +433,7 @@ export function AdminSessionManager() {
                   key={novncUrl}
                   src={novncUrl}
                   className="w-full h-[600px]"
-                  title="noVNC - Session Manager"
+                  title="noVNC - Quản lý phiên"
                   allow="clipboard-read; clipboard-write"
                 />
               )}

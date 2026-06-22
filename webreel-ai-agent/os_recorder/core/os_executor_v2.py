@@ -199,6 +199,7 @@ def _try_opencv_verify(
     target_pid: int,
     patch_size: int = 80,
     confidence: float = 0.75,
+    max_offset_px: int = 180,
 ) -> tuple[int, int] | None:
     """
     Cat 1 vung nho quanh toa do (img_x, img_y) tu screenshot goc,
@@ -254,6 +255,15 @@ def _try_opencv_verify(
             # max_loc la top-left cua match, chuyen sang center
             match_cx = max_loc[0] + (x2 - x1) // 2
             match_cy = max_loc[1] + (y2 - y1) // 2
+
+            dx = abs(match_cx - img_x)
+            dy = abs(match_cy - img_y)
+            if dx > max_offset_px or dy > max_offset_px:
+                logger.info(
+                    f"    -> OpenCV match rejected: confidence={max_val:.2f}, "
+                    f"offset=({dx},{dy}) > {max_offset_px}px"
+                )
+                return None
 
             # Chuyen sang screen coords
             screen_x = win_rect[0] + match_cx

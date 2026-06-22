@@ -3,7 +3,9 @@ OS Pipeline V4 with Auto-Launch & Auto-Reset - Production-ready pipeline:
   Phase 0 (Launch):  Auto-launch app with file/URL
   Phase 1 (Plan):    Agent dò đường + sinh plan.json + narrations
   Phase 2 (TTS):     Sinh audio từ narrations bằng Edge TTS
-  Phase 2.5 (Reset): AUTO-RESET app state (no manual intervention)
+  Phase 2.5 (Review): Wait for approved narration script
+  Phase 2.6 (Timing): Inject exact TTS durations into plan
+  Phase 2.75 (Reset): AUTO-RESET app state (no manual intervention)
   Phase 3 (Record):  Replay plan.json + quay FFmpeg + chụp screenshots
   Phase 4 (Mix):     Ghép audio vào video bằng trace_composer
   Phase 5 (Render):  Tạo DOCX + PDF từ screenshots (parallel)
@@ -39,6 +41,81 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 
+def _build_review_script(narrations: list, plan: list) -> list:
+    """Convert plan narrations to the frontend review segment format."""
+    action_type_by_index = {}
+    for step in plan:
+        desc = step.get("description", "")
+        match = re.search(r"\[NARRATION:(\d+)\]", desc)
+        if match:
+            action_type_by_index[int(match.group(1))] = step.get("action_type", "")
+
+    return [
+        {
+            "id": f"seg_{i:03d}",
+            "text": narr["text"],
+            "narration": narr["text"],
+            "narration_index": narr["index"],
+            "action_type": action_type_by_index.get(narr["index"], ""),
+            "approved": True,
+        }
+        for i, narr in enumerate(narrations)
+    ]
+
+
+def _normalize_reviewed_script(reviewed_script: list, original_narrations: list) -> list:
+    """Normalize approved review data back to OS narration entries."""
+    if not isinstance(reviewed_script, list):
+        return original_narrations
+
+    normalized = []
+    for position, segment in enumerate(reviewed_script):
+        if not isinstance(segment, dict):
+            continue
+
+        text = segment.get("text") or segment.get("narration") or ""
+        text = str(text).strip()
+        if not text:
+            continue
+
+        raw_index = segment.get("narration_index", segment.get("index"))
+        if raw_index is None and position < len(original_narrations):
+            raw_index = original_narrations[position]["index"]
+
+        try:
+            narr_index = int(raw_index)
+        except (TypeError, ValueError):
+            narr_index = position
+
+        normalized.append({"index": narr_index, "text": text})
+
+    return normalized or original_narrations
+
+
+def _apply_reviewed_script_to_plan(plan: list, narrations: list) -> bool:
+    """Replace narration text in plan descriptions after review."""
+    text_by_index = {narr["index"]: narr["text"] for narr in narrations}
+    changed = False
+
+    for step in plan:
+        desc = step.get("description", "")
+        match = re.match(r"(\[NARRATION:(\d+)\])\s*(.*)", desc)
+        if not match:
+            continue
+
+        narr_index = int(match.group(2))
+        reviewed_text = text_by_index.get(narr_index)
+        if reviewed_text is None:
+            continue
+
+        new_desc = f"{match.group(1)} {reviewed_text}"
+        if new_desc != desc:
+            step["description"] = new_desc
+            changed = True
+
+    return changed
+
+
 def run_os_pipeline_v4_auto(
     app_type: str,
     task_description: str,
@@ -51,6 +128,7 @@ def run_os_pipeline_v4_auto(
     dry_run: bool = False,
     skip_tts: bool = False,
     enable_dual_output: bool = True,
+    enable_review: bool = True,
     progress_callback=None,
     cancel_event=None,
     review_event=None,
@@ -220,6 +298,49 @@ def run_os_pipeline_v4_auto(
         return result
 
     # ================================================================
+    # PHASE 2.5: Review narration script
+    # ================================================================
+    tts_script_path = project_dir / "tts_script.json"
+    if narrations:
+        review_script = _build_review_script(narrations, plan)
+        with open(tts_script_path, "w", encoding="utf-8") as f:
+            json.dump(review_script, f, indent=2, ensure_ascii=False)
+        logger.info(f"  TTS script: {tts_script_path} ({len(review_script)} segments)")
+
+        if enable_review and progress_callback:
+            logger.info(f"\n{'='*60}")
+            logger.info("  PHASE 2.5: Review narration script")
+            logger.info(f"{'='*60}")
+
+            reviewed_script = progress_callback(
+                2.5,
+                "Waiting for user review",
+                review_script,
+            )
+
+            if cancel_event and cancel_event.is_set():
+                logger.info("Pipeline cancelled during Phase 2.5 review")
+                return result
+
+            if reviewed_script:
+                narrations = _normalize_reviewed_script(reviewed_script, narrations)
+                result["narrations"] = narrations
+                _apply_reviewed_script_to_plan(plan, narrations)
+
+                with open(plan_path, "w", encoding="utf-8") as f:
+                    json.dump(plan, f, indent=2, ensure_ascii=False)
+
+                review_script = _build_review_script(narrations, plan)
+                with open(tts_script_path, "w", encoding="utf-8") as f:
+                    json.dump(review_script, f, indent=2, ensure_ascii=False)
+
+                logger.info(f"  Review approved: {len(narrations)} segments")
+            else:
+                logger.info("  Review skipped or timed out, continuing with generated script")
+        elif enable_review:
+            logger.info("  Review enabled but no progress callback was provided")
+
+    # ================================================================
     # PHASE 2: TTS (PARALLEL)
     # ================================================================
     audio_files = []
@@ -286,11 +407,11 @@ def run_os_pipeline_v4_auto(
         return result
 
     # ================================================================
-    # PHASE 2.5: Inject exact TTS durations
+    # PHASE 2.6: Inject exact TTS durations
     # ================================================================
     if audio_files and any(a for a in audio_files if a):
         logger.info(f"\n{'='*60}")
-        logger.info(f"  PHASE 2.5 (Injector): Exact TTS durations")
+        logger.info(f"  PHASE 2.6 (Injector): Exact TTS durations")
         logger.info(f"{'='*60}")
 
         padding_ms = 300

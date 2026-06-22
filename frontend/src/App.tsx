@@ -50,7 +50,7 @@ function Sidebar() {
         { name: "Tổng quan", path: "/admin", icon: LayoutDashboard, show: true },
         { name: "Người dùng", path: "/admin/users", icon: Users, show: true },
         { name: "Công việc", path: "/admin/jobs", icon: Video, show: true },
-        { name: "Session Manager", path: "/admin/session", icon: Snowflake, show: true },
+        { name: "Quản lý phiên", path: "/admin/session", icon: Snowflake, show: true },
         { name: "Cấu hình Agent", path: "/admin/agent-config", icon: Bot, show: true },
       ]
     : [

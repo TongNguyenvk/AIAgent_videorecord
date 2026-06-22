@@ -17,8 +17,13 @@ export interface Video {
   thumbnail?: string | null;
   video_url?: string;
   jobId?: string;
+  user_id?: string;
   progress?: JobProgress | null;
   error?: string | null;
+  cancel_message?: string | null;
+  cancel_reason_label?: string | null;
+  cancelled_by_role?: "user" | "admin" | string | null;
+  cancelled_at?: string | null;
 }
 
 export interface JobProgress {
@@ -41,6 +46,10 @@ export interface JobDetail {
     duration_seconds?: number | null;
   } | null;
   error?: string | null;
+  cancel_message?: string | null;
+  cancel_reason_label?: string | null;
+  cancelled_by_role?: "user" | "admin" | string | null;
+  cancelled_at?: string | null;
   created_at: string;
   started_at?: string | null;
   completed_at?: string | null;
@@ -75,6 +84,10 @@ export async function fetchVideos(): Promise<Video[]> {
       duration: job.result?.duration_seconds ? `${job.result.duration_seconds}s` : "--",
       progress: job.progress || null,
       error: job.error || null,
+      cancel_message: job.cancel_message || null,
+      cancel_reason_label: job.cancel_reason_label || null,
+      cancelled_by_role: job.cancelled_by_role || null,
+      cancelled_at: job.cancelled_at || null,
     }));
   } catch (error) {
     console.error("API Error: Backend offline or CORS issue.", error);
@@ -97,7 +110,7 @@ export async function createVideo(data: {
 }): Promise<Video> {
   let res;
 
-  if (data.file) {
+  if (data.file && data.job_type === "presentation") {
     const formData = new FormData();
     formData.append("file", data.file);
     formData.append("task", data.prompt);
@@ -128,6 +141,28 @@ export async function createVideo(data: {
       body: formData,
     });
   } else {
+    let uploadedFileUrl: string | undefined;
+
+    if (data.file) {
+      const formData = new FormData();
+      formData.append("file", data.file);
+
+      const token = localStorage.getItem("token");
+      const uploadRes = await fetch(`${API_BASE}/jobs/upload-file`, {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+
+      if (!uploadRes.ok) {
+        const errorData = await uploadRes.json().catch(() => ({}));
+        throw new Error(errorData.detail || "Upload file failed");
+      }
+
+      const uploadResult = await uploadRes.json();
+      uploadedFileUrl = uploadResult.file_url;
+    }
+
     const payload = {
       task: data.prompt,
       job_type: data.job_type,
@@ -139,6 +174,7 @@ export async function createVideo(data: {
         enable_review: data.enable_review,
         // V4 OS Worker config
         ...(data.app_type && { app_type: data.app_type }),
+        ...(uploadedFileUrl && { uploaded_file_url: uploadedFileUrl }),
         ...(data.browser_url && { browser_url: data.browser_url }),
       },
     };
@@ -170,6 +206,22 @@ export async function getJobDetail(jobId: string): Promise<JobDetail> {
     headers: getAuthHeaders(),
   });
   if (!res.ok) throw new Error("Failed to get job detail");
+  return res.json();
+}
+
+export async function cancelMyJob(jobId: string): Promise<{
+  message: string;
+  job_id: string;
+  status: VideoStatus;
+}> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}`, {
+    method: "DELETE",
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Không thể dừng job");
+  }
   return res.json();
 }
 
@@ -240,6 +292,41 @@ export interface AdminUser {
   last_login?: string;
 }
 
+export interface AdminCreateUserPayload {
+  email: string;
+  name: string;
+  password: string;
+  role: "user" | "admin";
+  tier: string;
+  videos_per_month: number;
+}
+
+export interface CurrentUserProfile {
+  user_id: string;
+  email: string;
+  name: string;
+  auth_provider: "local" | "google" | "both";
+  avatar_url?: string | null;
+  role: "user" | "admin";
+  tier: string;
+  status: string;
+  email_verified: boolean;
+  quota: {
+    videos_per_month: number;
+    videos_used_this_month: number;
+  };
+  created_at: string;
+  last_login?: string;
+}
+
+export async function fetchCurrentUserProfile(): Promise<CurrentUserProfile> {
+  const res = await fetch(`${API_BASE}/auth/me`, {
+    headers: getAuthHeaders(),
+  });
+  if (!res.ok) throw new Error("Không thể tải thông tin tài khoản");
+  return res.json();
+}
+
 export interface AdminStats {
   jobs: {
     total: number;
@@ -285,6 +372,12 @@ export async function fetchAllJobs(): Promise<Video[]> {
     video_url: job.result?.video_url,
     duration: job.result?.duration_seconds ? `${job.result.duration_seconds}s` : "--",
     user_id: job.user_id,
+    progress: job.progress || null,
+    error: job.error || null,
+    cancel_message: job.cancel_message || null,
+    cancel_reason_label: job.cancel_reason_label || null,
+    cancelled_by_role: job.cancelled_by_role || null,
+    cancelled_at: job.cancelled_at || null,
   }));
 }
 
@@ -293,6 +386,42 @@ export async function fetchAdminStats(): Promise<AdminStats> {
     headers: getAuthHeaders(),
   });
   if (!res.ok) throw new Error("Failed to fetch stats");
+  return res.json();
+}
+
+export async function createAdminUser(
+  payload: AdminCreateUserPayload,
+): Promise<{ message: string; user: AdminUser }> {
+  const res = await fetch(`${API_BASE}/admin/users`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Không thể tạo người dùng");
+  }
+  return res.json();
+}
+
+export async function cancelAdminJob(
+  jobId: string,
+  reasonCode: string,
+): Promise<{
+  message: string;
+  job_id: string;
+  status: VideoStatus;
+  reason_label: string;
+}> {
+  const res = await fetch(`${API_BASE}/admin/jobs/${jobId}/cancel`, {
+    method: "POST",
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ reason_code: reasonCode }),
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || "Không thể dừng job");
+  }
   return res.json();
 }
 
@@ -345,11 +474,13 @@ export interface VNCUrls {
     url: string;
     port: number;
     worker: string;
+    expires_at?: string;
   };
   presentation: {
     url: string;
     port: number;
     worker: string;
+    expires_at?: string;
   };
 }
 

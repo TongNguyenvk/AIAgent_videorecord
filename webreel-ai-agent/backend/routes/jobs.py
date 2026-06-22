@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from backend.auth import get_current_user
 from backend.crud.jobs import list_jobs, get_job_by_id, cancel_job
+from backend.queue import JobQueue
 from backend.storage import R2Storage
 from backend.utils.sanitize import sanitize_filename
 
@@ -154,20 +155,40 @@ async def cancel_my_job(
             detail="Access denied: not your job"
         )
     
-    # Cancel the job
-    success = await cancel_job(job_id)
+    if job.get("status") != "running":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chỉ có thể dừng job đang chạy"
+        )
+
+    success = await cancel_job(
+        job_id,
+        cancelled_by_role="user",
+        cancelled_by_user_id=user["user_id"],
+        message="Job đã được người dùng dừng",
+    )
     
     if not success:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot cancel job in current status"
+            detail="Không thể dừng job ở trạng thái hiện tại"
         )
+
+    queue = JobQueue()
+    removed_count = queue.remove_job_from_queues(job_id)
+    kill_published = queue.publish_job_kill(job_id)
     
-    logger.info(f"User {user['user_id']} cancelled job {job_id}")
+    logger.info(
+        f"User {user['user_id']} cancelled job {job_id} "
+        f"(removed_queue_items={removed_count}, kill_published={kill_published})"
+    )
     
     return {
-        "message": "Job cancelled successfully",
-        "job_id": job_id
+        "message": "Đã dừng job",
+        "job_id": job_id,
+        "status": "cancelled",
+        "removed_queue_items": removed_count,
+        "kill_published": kill_published
     }
 
 

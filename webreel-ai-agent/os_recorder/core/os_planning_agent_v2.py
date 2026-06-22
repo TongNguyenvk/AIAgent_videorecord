@@ -825,11 +825,17 @@ class OSPlanningAgent:
         elif action_type == "mouse_click":
             # Toa do tu Gemini la window-relative (theo anh screenshot)
             # Can chuyen sang screen coords bang cach cong window offset
-            img_x = action.get("x", 0)
-            img_y = action.get("y", 0)
             try:
                 from core.window_manager import get_window_rect_by_pid
                 win_rect = get_window_rect_by_pid(self.pid)
+                box = action.get("box")
+                if isinstance(box, list) and len(box) == 4 and win_rect:
+                    ymin, xmin, ymax, xmax = box
+                    img_x = int(((xmin + xmax) / 2) * win_rect[2] / 1000)
+                    img_y = int(((ymin + ymax) / 2) * win_rect[3] / 1000)
+                else:
+                    img_x = action.get("x", 0)
+                    img_y = action.get("y", 0)
                 if win_rect:
                     screen_x = win_rect[0] + img_x
                     screen_y = win_rect[1] + img_y

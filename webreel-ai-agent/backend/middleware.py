@@ -61,6 +61,17 @@ else:
             return decorator
     limiter = DummyLimiter()
 
+    from fastapi.responses import JSONResponse
+
+    async def rate_limit_exceeded_handler(request: Request, exc):
+        return JSONResponse(
+            status_code=429,
+            content={
+                "detail": "Rate limit exceeded",
+                "retry_after": 60,
+            },
+        )
+
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """

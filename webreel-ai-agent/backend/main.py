@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocke
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from contextlib import asynccontextmanager
 import asyncio
 import logging
@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from datetime import datetime, timezone
 from uuid import uuid4
-from typing import Optional
+from typing import Literal, Optional
 
 from backend.job_models import (
     JobSubmitRequest,
@@ -43,6 +43,10 @@ from backend.routes.download import router as download_router
 from backend.routes.session import router as session_router
 from backend.auth import get_current_user
 from backend.utils.sanitize import sanitize_filename
+from backend.utils.prompt_security import (
+    PromptInjectionError,
+    validate_no_prompt_injection,
+)
 
 # Setup structured logging
 setup_logging()
@@ -606,7 +610,13 @@ async def broadcast_progress(job_id: str) -> None:
 
 
 @app.post("/api/jobs", response_model=JobSubmitResponse, status_code=201)
-async def submit_job(request: JobSubmitRequest, background_tasks: BackgroundTasks):
+@limiter.limit("10/minute")
+async def submit_job(
+    request: Request,
+    job_request: JobSubmitRequest,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+):
     """
     Submit a new video generation job.
     
@@ -627,18 +637,24 @@ async def submit_job(request: JobSubmitRequest, background_tasks: BackgroundTask
             status_code=503,
             detail="Service Unavailable: Server is shutting down"
         )
+
+    try:
+        validate_no_prompt_injection(job_request.task, "task")
+    except PromptInjectionError as e:
+        logger.warning(f"Job submission rejected by prompt guard: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     
     # Generate unique job_id
     job_id = str(uuid4())
     
-    environment = request.environment
+    environment = job_request.environment
     
     logger.info(
         f"Job submitted: {job_id} (environment: {environment})",
         extra={
             "job_id": job_id,
-            "task": request.task[:100],  # Truncate long tasks
-            "video_name": request.video_name,
+            "task": job_request.task[:100],  # Truncate long tasks
+            "video_name": job_request.video_name,
             "environment": environment
         }
     )
@@ -647,16 +663,18 @@ async def submit_job(request: JobSubmitRequest, background_tasks: BackgroundTask
     job_entry = {
         "job_id": job_id,
         "status": "pending",
-        "task": request.task,
-        "video_name": request.video_name,
+        "task": job_request.task,
+        "video_name": job_request.video_name,
         "environment": environment,
-        "config": request.config.model_dump(),
+        "config": job_request.config.model_dump(),
         "progress": None,
         "result": None,
         "error": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "started_at": None,
-        "completed_at": None
+        "completed_at": None,
+        "user_id": user["user_id"],
+        "user_email": user["email"],
     }
     
     # Add to job queue
@@ -672,9 +690,9 @@ async def submit_job(request: JobSubmitRequest, background_tasks: BackgroundTask
         task = asyncio.create_task(
             execute_pipeline_with_tracking(
                 job_id=job_id,
-                task=request.task,
-                video_name=request.video_name,
-                config=request.config.model_dump()
+                task=job_request.task,
+                video_name=job_request.video_name,
+                config=job_request.config.model_dump()
             )
         )
         
@@ -1228,6 +1246,12 @@ async def upload_pptx(
       4. Saves job record to MongoDB
       5. Returns job_id + websocket URL for tracking
     """
+    try:
+        validate_no_prompt_injection(task, "task")
+    except PromptInjectionError as e:
+        logger.warning(f"PPTX upload rejected by prompt guard: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
     if not file.filename or not file.filename.lower().endswith((".pptx", ".ppt", ".pdf")):
         raise HTTPException(status_code=400, detail="Only .pptx, .ppt, or .pdf files are accepted")
     
@@ -1344,6 +1368,12 @@ async def upload_pptx_gg(
       - Uses /present URL for auto-start presentation mode
       - Optimized prompt for Google Slides navigation
     """
+    try:
+        validate_no_prompt_injection(task, "task")
+    except PromptInjectionError as e:
+        logger.warning(f"Google Slides upload rejected by prompt guard: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
     if not file.filename or not file.filename.lower().endswith((".pptx", ".ppt")):
         raise HTTPException(status_code=400, detail="Only .pptx or .ppt files are accepted")
     
@@ -1489,11 +1519,28 @@ async def reset_shutdown_flag():
 
 class QueueJobRequest(BaseModel):
     """Request model for queue-based job submission."""
-    task: str
-    video_name: str = ""
-    job_type: str = "web"  # "web", "office", "os", "presentation"
-    config: dict = {}
+    task: str = Field(..., min_length=1, max_length=1000)
+    video_name: str = Field(default="", max_length=100, pattern=r"^[a-zA-Z0-9_-]*$")
+    job_type: Literal["web", "office", "os", "presentation", "presentation_gg"] = "web"
+    config: dict = Field(default_factory=dict)
     # user_id and user_email are auto-extracted from JWT token
+
+    @field_validator("task", mode="before")
+    @classmethod
+    def validate_task(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Task must be a string")
+        value = value.strip()
+        if not value:
+            raise ValueError("Task cannot be empty")
+        return value
+
+    @field_validator("video_name", mode="before")
+    @classmethod
+    def validate_video_name(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Video name must be a string")
+        return value.strip()
 
 
 @app.post("/api/queue/submit")
@@ -1511,6 +1558,17 @@ async def submit_queue_job(request: Request, job_req: QueueJobRequest, user: dic
     """
     if not redis_queue.redis:
         raise HTTPException(status_code=503, detail="Redis not available. Use /api/jobs for direct execution.")
+
+    try:
+        validate_no_prompt_injection(job_req.task, "task")
+        config_task = job_req.config.get("task")
+        if isinstance(config_task, str):
+            validate_no_prompt_injection(config_task, "config.task")
+    except PromptInjectionError as e:
+        logger.warning(
+            f"Queue job rejected by prompt guard: user={user.get('user_id')} error={e}"
+        )
+        raise HTTPException(status_code=400, detail=str(e))
     
     # Check user quota
     from backend.crud.users import check_quota, increment_quota_usage

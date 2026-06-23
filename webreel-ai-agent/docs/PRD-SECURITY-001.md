@@ -183,6 +183,36 @@ agent = Agent(
 
 ---
 
+### Task 2.1: Submit-time Prompt Guard - Production API
+
+**Production path từ Docker hiện tại:**
+
+- Frontend production build từ thư mục root `frontend`, không phải `webreel-ai-agent/frontend_web`
+- Form tạo job gọi `POST /api/queue/submit` cho web và OS jobs
+- Upload trình chiếu gọi `POST /api/upload-pptx-gg`
+- `docker-compose.prod.yml` không launch `os-queue`; OS Worker chạy ngoài Docker theo `run_os_worker.ps1`
+- Office Worker tồn tại trong compose nhưng chưa nằm trong phạm vi production hiện tại
+
+**Files:**
+
+- `backend/utils/prompt_security.py`
+- `backend/main.py`
+
+**Thay đổi:**
+
+- Thêm guard trước khi enqueue job để chặn payload rõ ràng như `ignore previous instructions` và `output system prompt`
+- Áp dụng cho `/api/queue/submit`, `/api/upload-pptx`, `/api/upload-pptx-gg`, và legacy `/api/jobs`
+- Legacy `/api/jobs` phải có auth và rate limit để không bypass đường production
+- `QueueJobRequest.video_name` phải validate theo `^[a-zA-Z0-9_-]*$` vì worker dùng `video_name` làm thư mục output
+
+**Nguyên tắc:**
+
+- API guard là lớp chặn sớm, không thay thế prompt isolation trong worker
+- Guard dùng scoring nhẹ để tránh chặn mọi câu có chữ `system prompt`
+- Nếu guard phát hiện injection, backend trả `400` và không trừ quota, không đưa job vào Redis
+
+---
+
 ### Task 3: Unified Filename Sanitization
 
 **File mới:** `backend/utils/sanitize.py`
@@ -416,14 +446,17 @@ HTTP 429 Too Many Requests
 1. **Prompt Injection Prevention:**
    - [x] User cannot extract system prompt via crafted task
    - [x] AI behavior không bị thay đổi bởi user task
-   - [x] All 4 workers (web, presentation, presentation_gg, os) protected
-   - [x] OVERRIDE_RULE có trong system prompt của cả 4 workers
+   - [x] Production submit API chặn prompt injection trước khi enqueue
+   - [x] Web, presentation, presentation_gg protected qua `desktop_app/pipeline.py`
+   - [x] OS Worker V4 protected qua `os_planning_agent_v2.py`
+   - [ ] Office Worker chưa nằm trong phạm vi production hiện tại
 
 2. **Filename Sanitization:**
    - [x] Path traversal characters stripped
    - [x] All upload routes use unified function
    - [x] Test cases pass với malicious filenames
    - [x] Sanitize được gọi TRƯỚC khi thêm unique_id prefix
+   - [x] Queue submit `video_name` được validate trước khi worker dùng làm output path
 
 3. **Rate Limiting:**
    - [x] Login endpoint throttled at 5 req/min

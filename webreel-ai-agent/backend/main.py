@@ -176,7 +176,7 @@ async def lifespan(app: FastAPI):
     
     logger.info("FastAPI backend started successfully")
     if redis_queue.redis:
-        logger.info(f"Redis queue connected: {redis_queue.redis_url}")
+        logger.info(f"Redis queue connected: {redis_queue._sanitize_url(redis_queue.redis_url)}")
     else:
         logger.info("Redis not available, using direct execution mode only")
     

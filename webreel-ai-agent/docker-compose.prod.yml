@@ -508,7 +508,7 @@ services:
     container_name: webreel-autoscaler
     working_dir: /app/webreel-ai-agent
     # Chay non-root vi chi can goi HTTP toi socket proxy, khong can root
-    user: "1000:1000"
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
     # Read-only filesystem: ke tan cong khong the sua doi code autoscaler
     read_only: true
     tmpfs:

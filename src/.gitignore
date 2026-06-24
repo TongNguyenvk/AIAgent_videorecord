@@ -40,6 +40,9 @@ webreel-ai-agent/browser-use/
 # Google Drive Service Account keys (NEVER COMMIT)
 key/
 webreel-ai-agent/key/
+**/token_cache.bin
+**/*oauth_token*.pickle
+**/*oauth*.pickle
 *.json
 !package.json
 !package-lock.json
@@ -96,3 +99,19 @@ baocao/**/ffmpeg_tmp/
 baocao/**/log.txt
 baocao/**/pids.txt
 *.m4a
+
+# Personal deployment + security notes (chứa thông tin nhạy cảm về VPS/secrets)
+DEPLOYMENT_NOTES.md
+webreel-deploy-backup-*.zip
+BACKUP_README.txt
+OS_WORKER_SETUP_LOCAL.md
+THUNGHIEM_PLAN.md
+BAOCAO_4.5.md
+batch_*_metrics.csv
+batch_*_summary.txt
+
+# OCI ARM hunter bundle (chứa OCI API config, private key, configs nhạy cảm)
+oci-arm-hunter/
+
+# Monitoring stack (chứa Grafana admin password, dashboards có thể leak metric)
+monitoring-stack/

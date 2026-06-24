@@ -81,10 +81,10 @@ MongoDB              Redis Queue / PubSub
 
 Các thành phần chính:
 
-- `frontend`: Ứng dụng React, Vite, Tailwind CSS, shadcn/ui, phục vụ qua Nginx ở môi trường production.
-- `webreel-ai-agent/backend`: API FastAPI, xác thực, quản lý job, admin UI API, WebSocket, Google OAuth và endpoint tải kết quả.
-- `webreel-ai-agent/worker`: Các worker xử lý web, trình chiếu, Google Slides, Office và autoscaler.
-- `packages/@webreel/core` và `packages/webreel`: Lõi ghi hình và dựng video của WebReel.
+- `src/frontend`: Ứng dụng React, Vite, Tailwind CSS, shadcn/ui, phục vụ qua Nginx ở môi trường production.
+- `src/webreel-ai-agent/backend`: API FastAPI, xác thực, quản lý job, admin UI API, WebSocket, Google OAuth và endpoint tải kết quả.
+- `src/webreel-ai-agent/worker`: Các worker xử lý web, trình chiếu, Google Slides, Office và autoscaler.
+- `src/packages/@webreel/core` và `src/packages/webreel`: Lõi ghi hình và dựng video của WebReel.
 - `MongoDB`: Lưu người dùng, job, trạng thái, quota, cấu hình agent và metadata.
 - `Redis`: Hàng đợi job, Pub/Sub log tiến độ và kênh điều phối worker.
 - `session-manager`: Container Chromium dùng để lưu snapshot phiên đăng nhập cho các tác vụ cần trạng thái trình duyệt.
@@ -138,13 +138,13 @@ Máy chủ triển khai:
 File cấu hình chính nằm tại:
 
 ```text
-webreel-ai-agent/.env
+src/webreel-ai-agent/.env
 ```
 
 Tạo file từ mẫu:
 
 ```bash
-cd webreel-ai-agent
+cd src/webreel-ai-agent
 cp .env.example .env
 ```
 
@@ -183,6 +183,7 @@ Lưu ý:
 Từ thư mục gốc repository:
 
 ```bash
+cd src
 pnpm install
 pnpm build
 cd webreel-ai-agent
@@ -190,7 +191,7 @@ cp .env.example .env
 nano .env
 ```
 
-Nếu chạy production HTTPS, đặt chứng chỉ vào `webreel-ai-agent/nginx-certs`:
+Nếu chạy production HTTPS, đặt chứng chỉ vào `src/webreel-ai-agent/nginx-certs`:
 
 ```bash
 mkdir -p nginx-certs
@@ -204,7 +205,7 @@ origin-key.pem
 Override production tối thiểu:
 
 ```yaml
-# webreel-ai-agent/docker-compose.override.yml
+# src/webreel-ai-agent/docker-compose.override.yml
 services:
   frontend:
     ports:
@@ -234,7 +235,7 @@ Worker không cần chạy cố định bằng `up`. Autoscaler sẽ tự tạo 
 Frontend production đang dùng Nginx HTTPS. Khi test local, chạy backend bằng Docker và frontend bằng Vite.
 
 ```yaml
-# webreel-ai-agent/docker-compose.local.yml
+# src/webreel-ai-agent/docker-compose.local.yml
 services:
   api:
     ports:
@@ -242,7 +243,7 @@ services:
 ```
 
 ```bash
-cd webreel-ai-agent
+cd src/webreel-ai-agent
 docker compose -f docker-compose.prod.yml -f docker-compose.local.yml build api autoscaler session-manager web-worker office-worker presentation-worker presentation-gg-worker
 docker compose -f docker-compose.prod.yml -f docker-compose.local.yml up -d mongodb redis api session-manager docker-socket-proxy autoscaler test-server
 ```
@@ -271,7 +272,7 @@ http://localhost:5173
 ## 11. Lệnh Vận Hành Thường Dùng
 
 ```bash
-cd webreel-ai-agent
+cd src/webreel-ai-agent
 docker compose -f docker-compose.prod.yml -f docker-compose.override.yml ps
 docker logs -f webreel-api
 docker logs -f webreel-autoscaler
@@ -289,11 +290,12 @@ OS Worker được dùng cho các job cần thao tác trực tiếp trên môi t
 
 1. Mở SSH tunnel từ máy Windows về Redis trên VPS.
 2. Cấu hình `REDIS_URL`, `API_URL`, `INTERNAL_API_KEY` và `WORKER_QUEUE=os-queue`.
-3. Chạy script `run_os_worker.ps1` ở thư mục gốc repository.
+3. Chạy script `run_os_worker.ps1` trong thư mục `src`.
 
 Ví dụ trên PowerShell:
 
 ```powershell
+cd src
 .\run_os_worker.ps1
 ```
 
@@ -303,21 +305,22 @@ Chi tiết cấu hình OS Worker nằm trong `OS_WORKER_SETUP_LOCAL.md`.
 
 ```text
 .
-├── docs/                         Tài liệu báo cáo và đề cương đồ án
-├── frontend/                     Frontend React, Vite, Nginx production config
-├── packages/@webreel/core/        Lõi ghi hình và xử lý timeline
-├── packages/webreel/              CLI và package WebReel
-├── webreel-ai-agent/
-│   ├── backend/                   FastAPI backend
-│   ├── worker/                    Worker, autoscaler và queue consumers
-│   ├── session_manager/           API nội bộ quản lý Chromium session
-│   ├── scripts/                   Entrypoint, session scripts và tiện ích Docker
-│   ├── docker-compose.prod.yml     Docker Compose production stack
-│   ├── Dockerfile.backend          Image backend/API
-│   ├── Dockerfile.worker           Image worker có Chromium, Xvfb, FFmpeg
-│   └── requirements.docker.txt     Python dependencies cho Docker
-├── run_os_worker.ps1              Script chạy OS Worker trên Windows
-└── README.md
+├── README.md
+├── docs/                          Tài liệu báo cáo, đề cương, slide, poster
+└── src/
+    ├── frontend/                  Frontend React, Vite, Nginx production config
+    ├── packages/@webreel/core/     Lõi ghi hình và xử lý timeline
+    ├── packages/webreel/           CLI và package WebReel
+    ├── webreel-ai-agent/
+    │   ├── backend/                FastAPI backend
+    │   ├── worker/                 Worker, autoscaler và queue consumers
+    │   ├── session_manager/        API nội bộ quản lý Chromium session
+    │   ├── scripts/                Entrypoint, session scripts và tiện ích Docker
+    │   ├── docker-compose.prod.yml Docker Compose production stack
+    │   ├── Dockerfile.backend      Image backend/API
+    │   ├── Dockerfile.worker       Image worker có Chromium, Xvfb, FFmpeg
+    │   └── requirements.docker.txt Python dependencies cho Docker
+    └── run_os_worker.ps1          Script chạy OS Worker trên Windows
 ```
 
 ## 14. Ghi Chú Bảo Mật
@@ -327,4 +330,4 @@ Chi tiết cấu hình OS Worker nằm trong `OS_WORKER_SETUP_LOCAL.md`.
 - Autoscaler dùng docker-socket-proxy để giảm quyền truy cập Docker API.
 - Worker chạy theo mô hình container ngắn hạn, mỗi job được cô lập tương đối và container được xóa sau khi hoàn tất.
 - Dữ liệu prompt và script sinh bởi AI cần đi qua cơ chế kiểm duyệt trước khi render video trong các luồng yêu cầu độ chính xác cao.
-- Các file trong `key/`, token OAuth, `.env`, chứng chỉ TLS và khóa SSH phải được xem là bí mật triển khai.
+- Các file trong `src/key/`, `src/webreel-ai-agent/key/`, token OAuth, `.env`, chứng chỉ TLS và khóa SSH phải được xem là bí mật triển khai.
